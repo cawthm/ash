@@ -1,0 +1,48 @@
+Assessment: Architectural Decisions & Task Scoping
+
+Based on my review, this project has strong documentation but there are areas that could use more definition before implementation begins.
+
+What's Well-Defined
+-------------------
+
+Task Scoping — Excellent. The 6-phase breakdown in SPECS.md is clear:
+- Each phase has explicit deliverables (e.g., discretizer.py, feature_builder.py)
+- Success criteria are specified
+- Logical sequencing with dependencies understood
+
+Model Architecture — Good initial constraints:
+- Transformer structure with multi-horizon heads is clearly diagrammed
+- Size bounds specified (128-256 embedding dim, 2-4 layers)
+- Latency requirement locked (<10ms inference)
+
+Directory Structure — Comprehensive planned layout in place
+
+Gaps & Ambiguities
+------------------
+
+1. Unresolved Open Questions — 11 questions listed but not answered:
+   - Single vs multi-asset model?
+   - Causal vs bidirectional attention?
+   - Target GPU specs?
+   - These should be decided before Phase 4 begins
+
+2. No Decision Engine Interface — The downstream consumer of predictions is undefined. What format does it expect? What's the contract?
+
+3. Discretization Strategy Not Locked — "Start with 101 buckets" is a suggestion. Should be a firm decision with rationale documented.
+
+4. Agent Definitions Incomplete — Only 3 of 6 agents defined (cuda-optimizer, streaming-integrator, evaluator are placeholders)
+
+5. No pyproject.toml — Dependencies aren't specified yet (PyTorch version, CUDA requirements, etc.)
+
+Recommendations
+---------------
+
+Priority | Action
+---------|-------
+High     | Resolve data questions (symbol list, timestamp alignment) in Phase 1 before proceeding
+High     | Lock discretization strategy (bucket count, width approach) at end of Phase 2
+Medium   | Define decision engine interface before streaming integration work
+Medium   | Specify target GPU and CUDA version constraints
+Low      | Complete remaining agent definitions when those phases approach
+
+The architecture is well-thought-out for a spec-first project. The main risk is carrying forward ambiguity — I'd recommend treating the "Open Questions" section as a checklist to resolve during the relevant phases rather than deferring them all.

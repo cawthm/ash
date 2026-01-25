@@ -11,6 +11,17 @@
 
 **Architecture Summary**: Lightweight transformer with discrete classification heads, outputting probability distributions across price buckets at multiple time horizons simultaneously.
 
+**Language Strategy**: Python for analysis and training (Phases 1-5), Rust for production inference (Phase 6).
+
+| Component | Language | Rationale |
+|-----------|----------|-----------|
+| Data exploration | Python | Pandas, database connectors, rapid iteration |
+| Feature engineering | Python | NumPy/Pandas ecosystem, prototyping speed |
+| Model training | Python | PyTorch, no practical alternative |
+| Production inference | Rust | Deterministic latency, no GC pauses, memory safety |
+
+**Model Handoff**: Train in PyTorch → Export to ONNX → Load in Rust via `ort` crate (ONNX Runtime bindings).
+
 ---
 
 ## 2. Phase 1: Data Exploration
@@ -167,15 +178,22 @@ Input Sequence (features × time steps)
 **Output**: Probability distribution over K buckets for each horizon
 
 ### CUDA Optimization
-- TensorRT or ONNX Runtime for production inference
+- ONNX Runtime for production inference (Rust `ort` crate)
 - Batched inference for multiple symbols
 - FP16 mixed precision training and inference
 - Pre-allocated memory buffers
 
+### Model Export
+- Export trained PyTorch model to ONNX format
+- Validate ONNX model outputs match PyTorch within tolerance
+- Optimize ONNX graph (constant folding, operator fusion)
+- Target ONNX opset version compatible with `ort` crate
+
 ### Deliverables
 - `models/architectures/price_transformer.py` — Model definition
 - `models/architectures/losses.py` — EMD and calibration losses
-- `models/inference/cuda_runner.py` — Optimized inference wrapper
+- `models/export/onnx_export.py` — PyTorch → ONNX conversion
+- `models/export/validate_export.py` — Parity testing between PyTorch and ONNX
 
 ### Open Questions
 - [ ] Causal attention vs bidirectional?
@@ -227,25 +245,51 @@ Train models with proper temporal separation and relevant metrics.
 
 ---
 
-## 7. Phase 6: Streaming Integration
+## 7. Phase 6: Streaming Integration (Rust)
 
 ### Objective
-Connect trained model to real-time data feeds for live inference.
+Connect trained model to real-time data feeds for live inference, implemented in Rust for deterministic low-latency performance.
 
 ### Interface Design
 
-```python
-class PricePredictor:
-    def __init__(self, model_path: str, config: Config):
-        """Load model and initialize CUDA buffers."""
+```rust
+pub struct PricePredictor {
+    model: ort::Session,
+    feature_buffer: FeatureBuffer,
+    config: Config,
+}
 
-    def update(self, tick: TickData) -> None:
-        """Ingest new data point, update internal state."""
+impl PricePredictor {
+    /// Load ONNX model and initialize buffers
+    pub fn new(model_path: &Path, config: Config) -> Result<Self>;
 
-    def predict(self) -> dict[str, np.ndarray]:
-        """Return probability distributions for all horizons."""
-        # Returns: {"1s": [p0, p1, ...], "5s": [...], ...}
+    /// Ingest new data point, update internal state
+    pub fn update(&mut self, tick: &TickData);
+
+    /// Return probability distributions for all horizons
+    pub fn predict(&self) -> HashMap<Horizon, Vec<f32>>;
+}
 ```
+
+### Feature Computation Boundary
+
+Two viable approaches for computing features at inference time:
+
+| Approach | Description | Pros | Cons |
+|----------|-------------|------|------|
+| **Option 1: Rust reimplements** | Feature logic rewritten in Rust | Lowest latency, single process | Risk of train/serve skew* |
+| **Option 2: Python computes** | Python service computes features, Rust runs model | Single source of truth | IPC overhead, more moving parts |
+
+*Train/serve skew: When feature computation differs between training and inference (e.g., edge case handling, floating point behavior), causing the model to see different distributions at serve time than it was trained on.
+
+**Recommendation**: Start with Option 2 for correctness, measure IPC overhead. If latency budget allows, keep it. If not, migrate to Option 1 with rigorous parity testing between Python and Rust implementations.
+
+### Parity Testing (if Option 1)
+If reimplementing features in Rust:
+- Generate test vectors from Python feature builder
+- Assert Rust outputs match within floating-point tolerance
+- Run on historical data, compare distributions
+- Include edge cases: market open, overnight gaps, extreme moves
 
 ### State Management
 - Minimal state: rolling feature buffers
@@ -258,9 +302,11 @@ class PricePredictor:
 - Logging: Predictions and latencies for analysis
 
 ### Deliverables
-- `streaming/predictor.py` — Main inference interface
-- `streaming/buffer.py` — Rolling data buffers
-- `streaming/benchmark.py` — Latency testing
+- `inference-rs/src/predictor.rs` — Main inference interface
+- `inference-rs/src/buffer.rs` — Rolling data buffers
+- `inference-rs/src/features.rs` — Feature computation (if Option 1)
+- `inference-rs/benches/latency.rs` — Latency benchmarks
+- `tests/feature_parity/` — Python↔Rust parity test vectors
 
 ---
 
@@ -270,36 +316,48 @@ class PricePredictor:
 ash/
 ├── README.md                   # Project overview
 ├── SPECS.md                    # This specification
-├── pyproject.toml              # Dependencies and build config
+├── pyproject.toml              # Python dependencies and build config
 │
 ├── data/
 │   ├── exploration/            # Data profiling outputs
 │   │   ├── data_dictionary.md
 │   │   ├── quality_report.md
 │   │   └── sample_queries.sql
-│   └── processors/             # Data transformation code
+│   └── processors/             # Data transformation code (Python)
 │       ├── discretizer.py
 │       ├── feature_builder.py
 │       └── sequence_builder.py
 │
 ├── models/
-│   ├── architectures/          # Model definitions
+│   ├── architectures/          # Model definitions (Python/PyTorch)
 │   │   ├── price_transformer.py
 │   │   └── losses.py
-│   ├── training/               # Training infrastructure
+│   ├── training/               # Training infrastructure (Python)
 │   │   ├── trainer.py
 │   │   └── data_loader.py
-│   └── inference/              # Production inference
-│       └── cuda_runner.py
+│   └── export/                 # Model export (Python → ONNX)
+│       ├── onnx_export.py
+│       └── validate_export.py
 │
-├── evaluation/                 # Metrics and analysis
+├── evaluation/                 # Metrics and analysis (Python)
 │   ├── metrics.py
 │   └── calibration.py
 │
-├── streaming/                  # Real-time integration
-│   ├── predictor.py
-│   ├── buffer.py
-│   └── benchmark.py
+├── inference-rs/               # Production inference (Rust)
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── predictor.rs        # Main inference interface
+│   │   ├── buffer.rs           # Rolling data buffers
+│   │   └── features.rs         # Feature computation (if Option 1)
+│   └── benches/
+│       └── latency.rs          # Latency benchmarks
+│
+├── tests/
+│   ├── python/                 # Python unit tests
+│   └── feature_parity/         # Python↔Rust feature parity tests
+│       ├── generate_vectors.py
+│       └── test_parity.rs
 │
 └── configs/                    # Configuration files
     ├── model.yaml
@@ -326,6 +384,12 @@ ash/
 - [ ] Streaming data format/protocol?
 - [ ] Decision engine interface requirements?
 
+### Rust Inference
+- [ ] Feature computation boundary: Option 1 (Rust reimplements) or Option 2 (Python computes)?
+- [ ] IPC mechanism if Option 2 (Unix socket, shared memory, etc.)?
+- [ ] ONNX opset version constraints?
+- [ ] Acceptable floating-point tolerance for parity tests?
+
 ---
 
 ## 10. Next Steps
@@ -338,5 +402,8 @@ ash/
 
 ---
 
-*Document version: 1.0*
-*Last updated: 2026-01-23*
+*Document version: 1.1*
+*Last updated: 2026-01-25*
+
+**Changelog**:
+- v1.1: Added Python/Rust hybrid language strategy; updated Phase 6 for Rust inference; added ONNX export phase; restructured directory for Rust components; added feature parity testing approach.
