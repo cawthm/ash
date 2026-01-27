@@ -1,0 +1,35 @@
+# Model Architecture Configuration
+# See SPECS.md Section 5 (Phase 4: Model Architecture)
+
+model:
+  # Embedding dimension (128-256 for <10ms inference)
+  embedding_dim: 128
+
+  # Number of transformer encoder layers (2-4)
+  num_layers: 2
+
+  # Number of attention heads (4-8)
+  num_heads: 4
+
+  # Feed-forward network hidden dimension (512-1024)
+  ff_dim: 512
+
+  # Dropout rate
+  dropout: 0.1
+
+  # Maximum sequence length
+  max_seq_len: 256
+
+# Prediction horizons in seconds
+horizons:
+  - 1
+  - 5
+  - 10
+  - 30
+  - 60
+  - 120
+  - 300
+  - 600
+
+# Number of output buckets per horizon
+num_buckets: 101

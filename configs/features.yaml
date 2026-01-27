@@ -1,0 +1,73 @@
+# Feature Engineering Configuration
+# See SPECS.md Section 4 (Phase 3: Feature Engineering)
+
+# Input sequence configuration
+sequence:
+  # Lookback window length (in seconds)
+  lookback_seconds: 300
+
+  # Sampling frequency (in seconds)
+  sample_interval: 1
+
+# Price history features
+price_features:
+  enabled: true
+  # Lookback windows for returns (in seconds)
+  return_windows:
+    - 1
+    - 5
+    - 10
+    - 30
+    - 60
+    - 120
+    - 300
+  # Include VWAP
+  include_vwap: true
+
+# Order flow features (from stock_trades)
+order_flow_features:
+  enabled: true
+  # Trade direction imbalance window (in seconds)
+  imbalance_window: 30
+  # Include trade size distribution
+  include_size_distribution: true
+  # Include arrival rate
+  include_arrival_rate: true
+
+# Options features (from options_data)
+options_features:
+  enabled: true
+  # Include implied volatility surface
+  include_iv_surface: true
+  # Include Greeks
+  include_greeks: true
+  # Include put/call ratios
+  include_put_call_ratio: true
+  # Include term structure slopes
+  include_term_structure: true
+
+# Volatility features
+volatility_features:
+  enabled: true
+  # Realized volatility windows (in seconds)
+  rv_windows:
+    - 60
+    - 300
+    - 600
+  # Include IV/RV spread
+  include_iv_rv_spread: true
+  # Include volatility of volatility
+  include_vol_of_vol: true
+
+# Cross-asset features
+cross_asset_features:
+  enabled: false  # Disabled until multi-asset decision is made
+  # Correlation window (in seconds)
+  correlation_window: 300
+  # Reference index symbol
+  # index_symbol: SPY
+
+# Overnight gap handling
+overnight:
+  # Strategy: 'mask', 'interpolate', or 'reset'
+  strategy: reset
