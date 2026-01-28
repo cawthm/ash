@@ -418,12 +418,12 @@ ash/
 
 Requires MCP database connectivity to query `options_data` and `stock_trades` tables.
 
-### Phase 2: Discretization Strategy - IN PROGRESS
+### Phase 2: Discretization Strategy - COMPLETE
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
-| `data/processors/discretizer.py` | Complete | 100% | 0 | BucketConfig, LogReturnDiscretizer |
-| `tests/python/test_discretizer.py` | Complete | 100% | 0 | 29 tests passing |
+| `data/processors/discretizer.py` | Complete | 100% | 0 | All discretizers implemented |
+| `tests/python/test_discretizer.py` | Complete | 100% | 0 | 74 tests passing |
 
 **Implemented**:
 - `BucketConfig` dataclass with validation (odd buckets, range includes 0)
@@ -431,12 +431,17 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - Log-return to basis points conversion
   - Discretization with edge clipping
   - Soft label generation with Gaussian smoothing
-- Default: 101 buckets, -50 to +50 bps (±0.5%)
-
-**Remaining**:
-- [ ] Implied volatility discretizer
-- [ ] Realized volatility discretizer
-- [ ] Volume discretizer
+  - Default: 101 buckets, -50 to +50 bps (±0.5%)
+- `VolatilityConfig` and `VolatilityDiscretizer` for IV/RV:
+  - Linear buckets from 5% to 150% annualized volatility
+  - Discretization with edge clipping
+  - Soft label generation
+  - Default: 101 buckets
+- `VolumeConfig` and `VolumeDiscretizer` for relative volume:
+  - Logarithmic spacing (0.5x and 2x equidistant from 1x)
+  - Optional linear scale mode
+  - `get_average_bucket()` to find bucket containing ratio 1.0
+  - Default: 101 buckets, 0.1x to 5.0x relative volume
 
 ### Phase 3: Feature Engineering - NOT STARTED
 
@@ -450,18 +455,19 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 ## 11. Next Steps
 
-1. **Immediate**: Complete Phase 2 volatility and volume discretizers
-2. Phase 1 data exploration (requires MCP database access)
-3. Feature engineering pipeline
-4. Model architecture and training
-5. Streaming integration and benchmarking
+1. Phase 1 data exploration (requires MCP database access)
+2. Phase 3: Feature engineering pipeline
+3. Phase 4: Model architecture and training
+4. Phase 5: Training pipeline
+5. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.3*
-*Last updated: 2026-01-27*
+*Document version: 1.4*
+*Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.4: Phase 2 complete - all discretizers implemented (LogReturn, Volatility, Volume) with 74 tests, 100% type coverage.
 - v1.3: Phase 2 started - implemented discretizer.py with log-return buckets (29 tests, 100% type coverage).
 - v1.2: Phase 0 complete - project setup with pyproject.toml, directory structure, configs, and verified type checking.
 - v1.1: Added Python/Rust hybrid language strategy; updated Phase 6 for Rust inference; added ONNX export phase; restructured directory for Rust components; added feature parity testing approach.
