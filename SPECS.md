@@ -505,7 +505,7 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 **Note**: Cross-asset features are disabled in config until multi-asset decision is made (see Open Questions).
 
-### Phase 4: Model Architecture - IN PROGRESS
+### Phase 4: Model Architecture - COMPLETE
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
@@ -515,7 +515,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `tests/python/test_price_transformer.py` | Complete | 100% | 0 | 59 tests passing |
 | `models/export/onnx_export.py` | Complete | 100% | 0 | ONNX export with exportable transformer |
 | `tests/python/test_onnx_export.py` | Complete | 100% | 0 | 32 tests passing |
-| `models/export/validate_export.py` | Not Started | - | - | - |
+| `models/export/validate_export.py` | Complete | 100% | 0 | PyTorch/ONNX parity validation |
+| `tests/python/test_validate_export.py` | Complete | 100% | 0 | 50 tests passing |
 
 **Implemented**:
 - `LossConfig` dataclass for loss function configuration
@@ -550,6 +551,19 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 - `_ExportableTransformerEncoder` wrapper for the full encoder
 - `export_model()`, `load_onnx_model()`, `check_model()`, `optimize_model()` utilities
 - `get_model_metadata()` for extracting embedded configuration
+- `ValidationConfig` dataclass for validation thresholds and options
+- `HorizonValidationResult` dataclass for per-horizon validation outcomes
+- `ValidationResult` dataclass for overall validation results
+- `ExportValidator` class for PyTorch/ONNX parity validation with:
+  - Configurable tolerance thresholds (rtol, atol)
+  - Multiple batch sizes and sequence lengths testing
+  - Probability distribution validation
+  - Statistical validation across random samples
+  - Reproducible validation with random seed
+- `validate_export()` convenience function for quick validation
+- `compute_max_diff()` utility for computing per-horizon differences
+- `check_tolerance()` utility for tolerance checking
+- `format_validation_report()` for human-readable validation reports
 
 ### Phase 5: Training Pipeline - NOT STARTED
 
@@ -560,16 +574,16 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 4 continued: Implement ONNX export validation (`validate_export.py`)
-3. Phase 5: Training pipeline
-4. Phase 6: Streaming integration and benchmarking
+2. Phase 5: Training pipeline
+3. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 2.1*
+*Document version: 2.2*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v2.2: Phase 4 complete - implemented validate_export.py with ValidationConfig, ValidationResult, ExportValidator, and utility functions for PyTorch/ONNX parity testing (50 tests, 100% type coverage, 420 tests total).
 - v2.1: Phase 4 continued - implemented onnx_export.py with ONNXExporter, ONNX-exportable transformer components (attention, encoder layer, encoder), export utilities, and metadata support (32 tests, 100% type coverage, 370 tests total).
 - v2.0: Phase 4 continued - implemented price_transformer.py with PriceTransformer model, TransformerConfig, PositionalEncoding, FeatureEmbedding, MultiHorizonHead, and factory functions (59 tests, 100% type coverage, 338 tests total).
 - v1.9: Phase 4 started - implemented losses.py with EMDLoss, SoftCrossEntropyLoss, FocalLoss, and MultiHorizonLoss (55 tests, 100% type coverage, 279 tests total).
