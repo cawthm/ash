@@ -443,13 +443,14 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `get_average_bucket()` to find bucket containing ratio 1.0
   - Default: 101 buckets, 0.1x to 5.0x relative volume
 
-### Phase 3: Feature Engineering - IN PROGRESS
+### Phase 3: Feature Engineering - COMPLETE
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
 | `data/processors/feature_builder.py` | Complete | 100% | 0 | Price, volatility, order flow & options features |
 | `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 98 tests passing |
-| `data/processors/sequence_builder.py` | Not Started | - | - | Temporal alignment |
+| `data/processors/sequence_builder.py` | Complete | 100% | 0 | Temporal alignment |
+| `tests/python/test_sequence_builder.py` | Complete | 100% | 0 | 46 tests passing |
 
 **Implemented**:
 - `PriceFeatureConfig` dataclass for price feature configuration
@@ -487,10 +488,22 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `compute_term_structure_slope()` IV term structure gradient
   - `compute_features()` to compute all options features
   - Default: 4 expiry buckets (7, 30, 60, 90d) x 5 moneyness buckets (0.95-1.05)
+- `SequenceConfig` dataclass for sequence construction configuration
+- `OvernightStrategy` enum (RESET, MASK, INTERPOLATE) for gap handling
+- `AlignedSequence` dataclass for aligned time series output
+- `SequenceBuilder` class with:
+  - `create_time_grid()` for regular-interval time grids
+  - `forward_fill_to_grid()` for 1D value alignment
+  - `forward_fill_2d_to_grid()` for 2D value alignment
+  - `detect_overnight_gaps()` for identifying market gaps
+  - `apply_overnight_strategy()` for gap handling
+  - `align_trade_data()` for stock trade alignment
+  - `align_options_data()` for options snapshot alignment
+  - `build_sequence()` for complete multi-source alignment
+  - `get_valid_range()` for contiguous valid data detection
+  - Default: 300s lookback, 1s interval, RESET overnight strategy
 
-**Remaining Phase 3 work**:
-- Cross-asset features (if enabled)
-- Sequence builder for temporal alignment
+**Note**: Cross-asset features are disabled in config until multi-asset decision is made (see Open Questions).
 
 ### Phase 4: Model Architecture - NOT STARTED
 
@@ -503,17 +516,17 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 3: Complete remaining feature engineering (cross-asset features, sequence builder)
-3. Phase 4: Model architecture and training
-4. Phase 5: Training pipeline
-5. Phase 6: Streaming integration and benchmarking
+2. Phase 4: Model architecture and training
+3. Phase 5: Training pipeline
+4. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.7*
+*Document version: 1.8*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.8: Phase 3 complete - added SequenceBuilder for temporal alignment with forward-fill, overnight gap handling, and multi-source data alignment (224 tests total, 100% type coverage).
 - v1.7: Phase 3 continued - added OptionsFeatureBuilder with IV surface, Greeks, put/call ratios, and term structure slope (98 tests total, 100% type coverage).
 - v1.6: Phase 3 continued - added OrderFlowFeatureBuilder with trade direction imbalance, size quantiles, and arrival rate (69 tests total, 100% type coverage).
 - v1.5: Phase 3 started - implemented feature_builder.py with PriceFeatureBuilder and VolatilityFeatureBuilder (42 tests, 100% type coverage).

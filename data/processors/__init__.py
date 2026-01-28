@@ -9,17 +9,35 @@ from data.processors.discretizer import (
     VolumeDiscretizer,
 )
 from data.processors.feature_builder import (
+    OptionsFeatureBuilder,
+    OptionsFeatureConfig,
+    OrderFlowFeatureBuilder,
+    OrderFlowFeatureConfig,
     PriceFeatureBuilder,
     PriceFeatureConfig,
     VolatilityFeatureBuilder,
     VolatilityFeatureConfig,
 )
+from data.processors.sequence_builder import (
+    AlignedSequence,
+    OvernightStrategy,
+    SequenceBuilder,
+    SequenceConfig,
+)
 
 __all__ = [
+    "AlignedSequence",
     "BucketConfig",
     "LogReturnDiscretizer",
+    "OptionsFeatureBuilder",
+    "OptionsFeatureConfig",
+    "OrderFlowFeatureBuilder",
+    "OrderFlowFeatureConfig",
+    "OvernightStrategy",
     "PriceFeatureBuilder",
     "PriceFeatureConfig",
+    "SequenceBuilder",
+    "SequenceConfig",
     "VolatilityConfig",
     "VolatilityDiscretizer",
     "VolatilityFeatureBuilder",
