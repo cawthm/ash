@@ -505,7 +505,26 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 **Note**: Cross-asset features are disabled in config until multi-asset decision is made (see Open Questions).
 
-### Phase 4: Model Architecture - NOT STARTED
+### Phase 4: Model Architecture - IN PROGRESS
+
+| File | Status | Type Coverage | Errors | Notes |
+|------|--------|---------------|--------|-------|
+| `models/architectures/losses.py` | Complete | 100% | 0 | EMD, soft-CE, focal losses |
+| `tests/python/test_losses.py` | Complete | 100% | 0 | 55 tests passing |
+| `models/architectures/price_transformer.py` | Not Started | - | - | - |
+| `models/export/onnx_export.py` | Not Started | - | - | - |
+| `models/export/validate_export.py` | Not Started | - | - | - |
+
+**Implemented**:
+- `LossConfig` dataclass for loss function configuration
+- `compute_cdf()` for CDF computation from probabilities
+- `earth_movers_distance()` for EMD between distributions (L1 and L2)
+- `create_soft_labels()` for Gaussian-smoothed soft targets
+- `EMDLoss` class for ordinal-aware loss using Wasserstein distance
+- `SoftCrossEntropyLoss` class for cross-entropy with soft label smoothing
+- `FocalLoss` class for handling class imbalance in bucket classification
+- `MultiHorizonLoss` class for combining losses across prediction horizons
+- `get_loss_function()` factory for creating loss functions from config
 
 ### Phase 5: Training Pipeline - NOT STARTED
 
@@ -516,16 +535,18 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 4: Model architecture and training
-3. Phase 5: Training pipeline
-4. Phase 6: Streaming integration and benchmarking
+2. Phase 4 continued: Implement price_transformer.py model architecture
+3. Phase 4 continued: Implement ONNX export and validation
+4. Phase 5: Training pipeline
+5. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.8*
+*Document version: 1.9*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.9: Phase 4 started - implemented losses.py with EMDLoss, SoftCrossEntropyLoss, FocalLoss, and MultiHorizonLoss (55 tests, 100% type coverage, 279 tests total).
 - v1.8: Phase 3 complete - added SequenceBuilder for temporal alignment with forward-fill, overnight gap handling, and multi-source data alignment (224 tests total, 100% type coverage).
 - v1.7: Phase 3 continued - added OptionsFeatureBuilder with IV surface, Greeks, put/call ratios, and term structure slope (98 tests total, 100% type coverage).
 - v1.6: Phase 3 continued - added OrderFlowFeatureBuilder with trade direction imbalance, size quantiles, and arrival rate (69 tests total, 100% type coverage).
