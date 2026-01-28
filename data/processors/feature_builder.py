@@ -4,6 +4,7 @@ This module implements feature computation for:
 - Price history features (returns at multiple lookback windows, VWAP)
 - Volatility features (realized volatility, IV/RV spread)
 - Order flow features (trade direction imbalance, size distribution, arrival rate)
+- Options features (IV surface, Greeks, put/call ratios, term structure)
 
 Features are computed from raw price/volume data and produce fixed-length
 feature vectors suitable for model input.
@@ -802,4 +803,448 @@ class OrderFlowFeatureBuilder:
             count += len(self.config.size_quantiles)
         if self.config.include_arrival_rate:
             count += 1
+        return count
+
+
+@dataclass(frozen=True)
+class OptionsFeatureConfig:
+    """Configuration for options-derived features.
+
+    Attributes:
+        include_iv_surface: Whether to include IV surface features (ATM IV by expiry).
+        include_greeks: Whether to include aggregated Greeks features.
+        include_put_call_ratio: Whether to include put/call volume/OI ratios.
+        include_term_structure: Whether to include IV term structure slope.
+        iv_moneyness_buckets: Moneyness levels for IV surface (as ratios to spot).
+        expiry_buckets_days: Days to expiration buckets for term structure.
+    """
+
+    include_iv_surface: bool = True
+    include_greeks: bool = True
+    include_put_call_ratio: bool = True
+    include_term_structure: bool = True
+    iv_moneyness_buckets: tuple[float, ...] = (0.95, 0.975, 1.0, 1.025, 1.05)
+    expiry_buckets_days: tuple[int, ...] = (7, 30, 60, 90)
+
+
+class OptionsFeatureBuilder:
+    """Computes options-derived features from options chain data.
+
+    Features computed:
+    - IV surface: ATM implied volatility across expiration buckets
+    - Greeks: Aggregated delta, gamma, vega, theta exposures
+    - Put/call ratios: Volume and open interest ratios
+    - Term structure slope: IV term structure gradient
+
+    Options data is expected as structured arrays with fields for:
+    strike, expiration, option_type (call/put), iv, delta, gamma, vega, theta,
+    volume, open_interest.
+
+    Attributes:
+        config: Options feature configuration.
+    """
+
+    def __init__(self, config: OptionsFeatureConfig | None = None) -> None:
+        """Initialize feature builder with configuration.
+
+        Args:
+            config: Options feature configuration. Uses defaults if None.
+        """
+        self.config = config or OptionsFeatureConfig()
+
+    def compute_moneyness(
+        self,
+        strikes: NDArray[np.floating[Any]],
+        spot_price: float,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute moneyness ratio for each strike.
+
+        Args:
+            strikes: Array of strike prices.
+            spot_price: Current underlying spot price.
+
+        Returns:
+            Moneyness ratios (strike / spot).
+        """
+        if spot_price <= 0:
+            raise ValueError("spot_price must be positive")
+        strikes = np.asarray(strikes, dtype=np.float64)
+        return strikes / spot_price
+
+    def compute_days_to_expiry(
+        self,
+        expirations: NDArray[np.floating[Any]],
+        current_time: float,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute days to expiration.
+
+        Args:
+            expirations: Array of expiration timestamps (Unix seconds or days).
+            current_time: Current timestamp (same units as expirations).
+
+        Returns:
+            Days to expiration for each option.
+        """
+        expirations = np.asarray(expirations, dtype=np.float64)
+        # Assuming timestamps are in seconds, convert to days
+        dte = (expirations - current_time) / (24 * 3600)
+        return np.maximum(dte, 0)  # Can't have negative DTE
+
+    def compute_atm_iv_by_expiry(
+        self,
+        strikes: NDArray[np.floating[Any]],
+        expirations: NDArray[np.floating[Any]],
+        ivs: NDArray[np.floating[Any]],
+        spot_price: float,
+        current_time: float,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute ATM implied volatility for each expiry bucket.
+
+        Selects options closest to ATM (moneyness ~1.0) and averages IV
+        within each expiry bucket.
+
+        Args:
+            strikes: Array of strike prices.
+            expirations: Array of expiration timestamps.
+            ivs: Array of implied volatilities (as decimals, e.g., 0.25 for 25%).
+            spot_price: Current underlying spot price.
+            current_time: Current timestamp.
+
+        Returns:
+            Array of ATM IVs for each expiry bucket in config.expiry_buckets_days.
+            NaN for buckets with no valid options.
+        """
+        strikes = np.asarray(strikes, dtype=np.float64)
+        ivs = np.asarray(ivs, dtype=np.float64)
+
+        moneyness = self.compute_moneyness(strikes, spot_price)
+        dte = self.compute_days_to_expiry(expirations, current_time)
+
+        result = np.full(len(self.config.expiry_buckets_days), np.nan, dtype=np.float64)
+
+        # ATM is within 2% of spot
+        atm_mask = np.abs(moneyness - 1.0) < 0.02
+
+        for i, bucket_days in enumerate(self.config.expiry_buckets_days):
+            # Options within ±7 days of bucket target
+            bucket_margin = min(bucket_days * 0.3, 7)  # 30% or 7 days max
+            dte_mask = np.abs(dte - bucket_days) <= bucket_margin
+            combined_mask = atm_mask & dte_mask & ~np.isnan(ivs)
+
+            if np.any(combined_mask):
+                # Weight by how close to ATM
+                weights = 1.0 / (np.abs(moneyness[combined_mask] - 1.0) + 0.001)
+                result[i] = np.average(ivs[combined_mask], weights=weights)
+
+        return result
+
+    def compute_iv_surface_features(
+        self,
+        strikes: NDArray[np.floating[Any]],
+        expirations: NDArray[np.floating[Any]],
+        ivs: NDArray[np.floating[Any]],
+        spot_price: float,
+        current_time: float,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute IV surface features across moneyness and expiry.
+
+        Args:
+            strikes: Array of strike prices.
+            expirations: Array of expiration timestamps.
+            ivs: Array of implied volatilities.
+            spot_price: Current underlying spot price.
+            current_time: Current timestamp.
+
+        Returns:
+            Flattened array of IV values: [expiry1_m1, expiry1_m2, ..., expiry2_m1, ...]
+            Shape: (num_expiry_buckets * num_moneyness_buckets,)
+        """
+        strikes = np.asarray(strikes, dtype=np.float64)
+        ivs = np.asarray(ivs, dtype=np.float64)
+
+        moneyness = self.compute_moneyness(strikes, spot_price)
+        dte = self.compute_days_to_expiry(expirations, current_time)
+
+        num_expiry = len(self.config.expiry_buckets_days)
+        num_moneyness = len(self.config.iv_moneyness_buckets)
+        result = np.full(num_expiry * num_moneyness, np.nan, dtype=np.float64)
+
+        for i, bucket_days in enumerate(self.config.expiry_buckets_days):
+            bucket_margin = min(bucket_days * 0.3, 7)
+            dte_mask = np.abs(dte - bucket_days) <= bucket_margin
+
+            for j, target_moneyness in enumerate(self.config.iv_moneyness_buckets):
+                # Moneyness within 1.5% of target
+                moneyness_mask = np.abs(moneyness - target_moneyness) < 0.015
+                combined_mask = dte_mask & moneyness_mask & ~np.isnan(ivs)
+
+                if np.any(combined_mask):
+                    # Weight by proximity to target moneyness
+                    weights = 1.0 / (
+                        np.abs(moneyness[combined_mask] - target_moneyness) + 0.001
+                    )
+                    result[i * num_moneyness + j] = np.average(
+                        ivs[combined_mask], weights=weights
+                    )
+
+        return result
+
+    def compute_aggregated_greeks(
+        self,
+        deltas: NDArray[np.floating[Any]],
+        gammas: NDArray[np.floating[Any]],
+        vegas: NDArray[np.floating[Any]],
+        thetas: NDArray[np.floating[Any]],
+        open_interests: NDArray[np.floating[Any]],
+        option_types: NDArray[np.int8],
+    ) -> NDArray[np.floating[Any]]:
+        """Compute aggregated Greeks weighted by open interest.
+
+        Greeks are aggregated as OI-weighted averages, providing a measure
+        of market-wide exposure.
+
+        Args:
+            deltas: Array of option deltas.
+            gammas: Array of option gammas.
+            vegas: Array of option vegas.
+            thetas: Array of option thetas.
+            open_interests: Array of open interest values.
+            option_types: Array of option types (1 for call, -1 for put).
+
+        Returns:
+            Array of [net_delta, total_gamma, total_vega, total_theta].
+        """
+        deltas = np.asarray(deltas, dtype=np.float64)
+        gammas = np.asarray(gammas, dtype=np.float64)
+        vegas = np.asarray(vegas, dtype=np.float64)
+        thetas = np.asarray(thetas, dtype=np.float64)
+        open_interests = np.asarray(open_interests, dtype=np.float64)
+        option_types = np.asarray(option_types, dtype=np.int8)
+
+        result = np.zeros(4, dtype=np.float64)
+        total_oi = np.sum(open_interests)
+
+        if total_oi <= 0:
+            return np.full(4, np.nan, dtype=np.float64)
+
+        # Net delta (calls positive, puts negative relative contribution)
+        # Delta already accounts for direction, so just weight by OI
+        result[0] = np.sum(deltas * open_interests) / total_oi
+
+        # Total gamma (absolute, both calls and puts contribute positively)
+        result[1] = np.sum(np.abs(gammas) * open_interests) / total_oi
+
+        # Total vega (positive for both calls and puts)
+        result[2] = np.sum(vegas * open_interests) / total_oi
+
+        # Total theta (typically negative, time decay)
+        result[3] = np.sum(thetas * open_interests) / total_oi
+
+        return result
+
+    def compute_put_call_ratios(
+        self,
+        option_types: NDArray[np.int8],
+        volumes: NDArray[np.floating[Any]],
+        open_interests: NDArray[np.floating[Any]],
+    ) -> NDArray[np.floating[Any]]:
+        """Compute put/call ratios for volume and open interest.
+
+        Args:
+            option_types: Array of option types (1 for call, -1 for put).
+            volumes: Array of trading volumes.
+            open_interests: Array of open interest values.
+
+        Returns:
+            Array of [volume_pc_ratio, oi_pc_ratio].
+            Ratio is put/call, so >1 means more put activity.
+        """
+        option_types = np.asarray(option_types, dtype=np.int8)
+        volumes = np.asarray(volumes, dtype=np.float64)
+        open_interests = np.asarray(open_interests, dtype=np.float64)
+
+        call_mask = option_types == 1
+        put_mask = option_types == -1
+
+        result = np.full(2, np.nan, dtype=np.float64)
+
+        # Volume ratio
+        call_volume = np.sum(volumes[call_mask])
+        put_volume = np.sum(volumes[put_mask])
+        if call_volume > 0:
+            result[0] = put_volume / call_volume
+
+        # OI ratio
+        call_oi = np.sum(open_interests[call_mask])
+        put_oi = np.sum(open_interests[put_mask])
+        if call_oi > 0:
+            result[1] = put_oi / call_oi
+
+        return result
+
+    def compute_term_structure_slope(
+        self,
+        atm_ivs_by_expiry: NDArray[np.floating[Any]],
+    ) -> float:
+        """Compute IV term structure slope.
+
+        Fits a linear regression of IV vs days-to-expiry and returns
+        the slope coefficient.
+
+        Args:
+            atm_ivs_by_expiry: ATM IVs for each expiry bucket.
+
+        Returns:
+            Slope of IV term structure (IV change per day).
+            Positive means contango, negative means backwardation.
+        """
+        expiry_days = np.array(self.config.expiry_buckets_days, dtype=np.float64)
+        ivs = np.asarray(atm_ivs_by_expiry, dtype=np.float64)
+
+        # Filter out NaN values
+        valid_mask = ~np.isnan(ivs)
+        if np.sum(valid_mask) < 2:
+            return np.nan
+
+        valid_days = expiry_days[valid_mask]
+        valid_ivs = ivs[valid_mask]
+
+        # Simple linear regression: slope = cov(x,y) / var(x)
+        mean_days = np.mean(valid_days)
+        mean_ivs = np.mean(valid_ivs)
+
+        numerator = np.sum((valid_days - mean_days) * (valid_ivs - mean_ivs))
+        denominator = np.sum((valid_days - mean_days) ** 2)
+
+        if denominator < 1e-10:
+            return np.nan
+
+        return float(numerator / denominator)
+
+    def compute_features(
+        self,
+        strikes: NDArray[np.floating[Any]],
+        expirations: NDArray[np.floating[Any]],
+        ivs: NDArray[np.floating[Any]],
+        spot_price: float,
+        current_time: float,
+        option_types: NDArray[np.int8] | None = None,
+        deltas: NDArray[np.floating[Any]] | None = None,
+        gammas: NDArray[np.floating[Any]] | None = None,
+        vegas: NDArray[np.floating[Any]] | None = None,
+        thetas: NDArray[np.floating[Any]] | None = None,
+        volumes: NDArray[np.floating[Any]] | None = None,
+        open_interests: NDArray[np.floating[Any]] | None = None,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute all options features.
+
+        Args:
+            strikes: Array of strike prices.
+            expirations: Array of expiration timestamps.
+            ivs: Array of implied volatilities.
+            spot_price: Current underlying spot price.
+            current_time: Current timestamp.
+            option_types: Option types (1=call, -1=put). Required for Greeks/ratios.
+            deltas: Option deltas. Required if include_greeks.
+            gammas: Option gammas. Required if include_greeks.
+            vegas: Option vegas. Required if include_greeks.
+            thetas: Option thetas. Required if include_greeks.
+            volumes: Trading volumes. Required if include_put_call_ratio.
+            open_interests: Open interest. Required if include_greeks or ratios.
+
+        Returns:
+            1D array of all computed features.
+        """
+        features_list: list[NDArray[np.floating[Any]]] = []
+
+        # IV surface features
+        if self.config.include_iv_surface:
+            iv_surface = self.compute_iv_surface_features(
+                strikes, expirations, ivs, spot_price, current_time
+            )
+            features_list.append(iv_surface)
+
+        # Greeks
+        if self.config.include_greeks:
+            if any(
+                x is None
+                for x in [option_types, deltas, gammas, vegas, thetas, open_interests]
+            ):
+                raise ValueError(
+                    "Greeks data required when include_greeks is True: "
+                    "option_types, deltas, gammas, vegas, thetas, open_interests"
+                )
+            # Type checker needs help here since we checked above
+            assert option_types is not None
+            assert deltas is not None
+            assert gammas is not None
+            assert vegas is not None
+            assert thetas is not None
+            assert open_interests is not None
+            greeks = self.compute_aggregated_greeks(
+                deltas, gammas, vegas, thetas, open_interests, option_types
+            )
+            features_list.append(greeks)
+
+        # Put/call ratios
+        if self.config.include_put_call_ratio:
+            if option_types is None or volumes is None or open_interests is None:
+                raise ValueError(
+                    "option_types, volumes, and open_interests required "
+                    "when include_put_call_ratio is True"
+                )
+            ratios = self.compute_put_call_ratios(option_types, volumes, open_interests)
+            features_list.append(ratios)
+
+        # Term structure slope
+        if self.config.include_term_structure:
+            atm_ivs = self.compute_atm_iv_by_expiry(
+                strikes, expirations, ivs, spot_price, current_time
+            )
+            slope = self.compute_term_structure_slope(atm_ivs)
+            features_list.append(np.array([slope], dtype=np.float64))
+
+        if not features_list:
+            return np.array([], dtype=np.float64)
+
+        return np.concatenate(features_list)
+
+    def get_feature_names(self) -> list[str]:
+        """Get ordered list of feature names.
+
+        Returns:
+            List of feature names corresponding to columns in compute_features output.
+        """
+        names: list[str] = []
+
+        if self.config.include_iv_surface:
+            for expiry in self.config.expiry_buckets_days:
+                for moneyness in self.config.iv_moneyness_buckets:
+                    names.append(f"iv_{expiry}d_m{int(moneyness * 100)}")
+
+        if self.config.include_greeks:
+            names.extend(["net_delta", "total_gamma", "total_vega", "total_theta"])
+
+        if self.config.include_put_call_ratio:
+            names.extend(["volume_pc_ratio", "oi_pc_ratio"])
+
+        if self.config.include_term_structure:
+            names.append("iv_term_slope")
+
+        return names
+
+    @property
+    def num_features(self) -> int:
+        """Total number of features produced by compute_features."""
+        count = 0
+        if self.config.include_iv_surface:
+            count += len(self.config.expiry_buckets_days) * len(
+                self.config.iv_moneyness_buckets
+            )
+        if self.config.include_greeks:
+            count += 4  # delta, gamma, vega, theta
+        if self.config.include_put_call_ratio:
+            count += 2  # volume ratio, OI ratio
+        if self.config.include_term_structure:
+            count += 1  # slope
         return count

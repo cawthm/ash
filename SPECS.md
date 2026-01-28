@@ -447,8 +447,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
-| `data/processors/feature_builder.py` | Complete | 100% | 0 | Price, volatility & order flow features |
-| `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 69 tests passing |
+| `data/processors/feature_builder.py` | Complete | 100% | 0 | Price, volatility, order flow & options features |
+| `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 98 tests passing |
 | `data/processors/sequence_builder.py` | Not Started | - | - | Temporal alignment |
 
 **Implemented**:
@@ -476,9 +476,19 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `compute_arrival_rate()` trades per second calculation
   - `compute_features()` to compute all order flow features
   - Default: 30s imbalance window, quantiles (25/50/75%), 60s arrival rate window
+- `OptionsFeatureConfig` dataclass for options feature configuration
+- `OptionsFeatureBuilder` class with:
+  - `compute_moneyness()` for strike/spot ratio calculation
+  - `compute_days_to_expiry()` for DTE calculation
+  - `compute_atm_iv_by_expiry()` ATM IV across expiry buckets
+  - `compute_iv_surface_features()` IV surface across moneyness x expiry grid
+  - `compute_aggregated_greeks()` OI-weighted delta, gamma, vega, theta
+  - `compute_put_call_ratios()` volume and OI put/call ratios
+  - `compute_term_structure_slope()` IV term structure gradient
+  - `compute_features()` to compute all options features
+  - Default: 4 expiry buckets (7, 30, 60, 90d) x 5 moneyness buckets (0.95-1.05)
 
 **Remaining Phase 3 work**:
-- Options features (IV surface, Greeks, put/call ratios)
 - Cross-asset features (if enabled)
 - Sequence builder for temporal alignment
 
@@ -493,17 +503,18 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 3: Complete remaining feature engineering (order flow, options features, sequence builder)
+2. Phase 3: Complete remaining feature engineering (cross-asset features, sequence builder)
 3. Phase 4: Model architecture and training
 4. Phase 5: Training pipeline
 5. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.6*
+*Document version: 1.7*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.7: Phase 3 continued - added OptionsFeatureBuilder with IV surface, Greeks, put/call ratios, and term structure slope (98 tests total, 100% type coverage).
 - v1.6: Phase 3 continued - added OrderFlowFeatureBuilder with trade direction imbalance, size quantiles, and arrival rate (69 tests total, 100% type coverage).
 - v1.5: Phase 3 started - implemented feature_builder.py with PriceFeatureBuilder and VolatilityFeatureBuilder (42 tests, 100% type coverage).
 - v1.4: Phase 2 complete - all discretizers implemented (LogReturn, Volatility, Volume) with 74 tests, 100% type coverage.

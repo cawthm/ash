@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from data.processors.feature_builder import (
+    OptionsFeatureBuilder,
+    OptionsFeatureConfig,
     OrderFlowFeatureBuilder,
     OrderFlowFeatureConfig,
     PriceFeatureBuilder,
@@ -817,3 +819,500 @@ class TestEdgeCases:
 
         assert not np.all(np.isnan(returns[1:]))
         assert np.all(np.isfinite(returns[1:]))
+
+
+class TestOptionsFeatureConfig:
+    """Tests for OptionsFeatureConfig dataclass."""
+
+    def test_default_config(self) -> None:
+        """Default config has expected values."""
+        config = OptionsFeatureConfig()
+        assert config.include_iv_surface is True
+        assert config.include_greeks is True
+        assert config.include_put_call_ratio is True
+        assert config.include_term_structure is True
+        assert config.iv_moneyness_buckets == (0.95, 0.975, 1.0, 1.025, 1.05)
+        assert config.expiry_buckets_days == (7, 30, 60, 90)
+
+    def test_custom_config(self) -> None:
+        """Custom config accepts valid values."""
+        config = OptionsFeatureConfig(
+            include_iv_surface=False,
+            include_greeks=False,
+            include_put_call_ratio=True,
+            include_term_structure=False,
+            iv_moneyness_buckets=(0.9, 1.0, 1.1),
+            expiry_buckets_days=(14, 28, 56),
+        )
+        assert config.include_iv_surface is False
+        assert config.include_greeks is False
+        assert config.include_put_call_ratio is True
+        assert config.include_term_structure is False
+        assert config.iv_moneyness_buckets == (0.9, 1.0, 1.1)
+        assert config.expiry_buckets_days == (14, 28, 56)
+
+
+class TestOptionsFeatureBuilder:
+    """Tests for OptionsFeatureBuilder class."""
+
+    def test_default_initialization(self) -> None:
+        """Builder initializes with default config."""
+        builder = OptionsFeatureBuilder()
+        assert builder.config.include_iv_surface is True
+        assert builder.config.expiry_buckets_days == (7, 30, 60, 90)
+
+    def test_compute_moneyness(self) -> None:
+        """Moneyness is computed correctly."""
+        builder = OptionsFeatureBuilder()
+        strikes = np.array([95.0, 100.0, 105.0])
+        moneyness = builder.compute_moneyness(strikes, spot_price=100.0)
+
+        assert np.allclose(moneyness, [0.95, 1.0, 1.05])
+
+    def test_compute_moneyness_zero_spot(self) -> None:
+        """Zero spot price raises ValueError."""
+        builder = OptionsFeatureBuilder()
+        with pytest.raises(ValueError, match="spot_price must be positive"):
+            builder.compute_moneyness(np.array([100.0]), spot_price=0.0)
+
+    def test_compute_moneyness_negative_spot(self) -> None:
+        """Negative spot price raises ValueError."""
+        builder = OptionsFeatureBuilder()
+        with pytest.raises(ValueError, match="spot_price must be positive"):
+            builder.compute_moneyness(np.array([100.0]), spot_price=-10.0)
+
+    def test_compute_days_to_expiry(self) -> None:
+        """Days to expiry computed correctly."""
+        builder = OptionsFeatureBuilder()
+        current = 1000000.0  # Unix seconds
+        day_seconds = 24 * 3600
+        expirations = np.array([
+            current + 7 * day_seconds,
+            current + 30 * day_seconds,
+            current + 60 * day_seconds,
+        ])
+        dte = builder.compute_days_to_expiry(expirations, current)
+
+        assert np.allclose(dte, [7.0, 30.0, 60.0])
+
+    def test_compute_days_to_expiry_past_expiration(self) -> None:
+        """Past expirations return 0 DTE (clamped)."""
+        builder = OptionsFeatureBuilder()
+        current = 1000000.0
+        expirations = np.array([current - 86400])  # 1 day ago
+        dte = builder.compute_days_to_expiry(expirations, current)
+
+        assert dte[0] == 0.0
+
+    def test_compute_atm_iv_by_expiry(self) -> None:
+        """ATM IV by expiry bucket computed correctly."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 30))
+        builder = OptionsFeatureBuilder(config)
+
+        spot = 100.0
+        current = 1000000.0
+        day_seconds = 24 * 3600
+
+        # Create options at various strikes and expiries
+        strikes = np.array([99.0, 100.0, 101.0, 99.0, 100.0, 101.0])
+        expirations = np.array([
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+        ])
+        ivs = np.array([0.22, 0.20, 0.21, 0.27, 0.25, 0.26])
+
+        atm_ivs = builder.compute_atm_iv_by_expiry(
+            strikes, expirations, ivs, spot, current
+        )
+
+        assert len(atm_ivs) == 2
+        # 7-day bucket: ATM strike 100 has IV 0.20
+        # weighted average will favor the 100 strike
+        assert 0.19 < atm_ivs[0] < 0.23
+        # 30-day bucket: ATM strike 100 has IV 0.25
+        assert 0.24 < atm_ivs[1] < 0.28
+
+    def test_compute_atm_iv_by_expiry_no_matching_options(self) -> None:
+        """Returns NaN when no options match a bucket."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 90))
+        builder = OptionsFeatureBuilder(config)
+
+        spot = 100.0
+        current = 1000000.0
+        day_seconds = 24 * 3600
+
+        # Only have 30-day options
+        strikes = np.array([100.0])
+        expirations = np.array([current + 30 * day_seconds])
+        ivs = np.array([0.25])
+
+        atm_ivs = builder.compute_atm_iv_by_expiry(
+            strikes, expirations, ivs, spot, current
+        )
+
+        # 7-day and 90-day buckets have no options
+        assert np.isnan(atm_ivs[0])
+        assert np.isnan(atm_ivs[1])
+
+    def test_compute_iv_surface_features(self) -> None:
+        """IV surface features computed for moneyness x expiry grid."""
+        config = OptionsFeatureConfig(
+            iv_moneyness_buckets=(0.95, 1.0, 1.05),
+            expiry_buckets_days=(7, 30),
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        spot = 100.0
+        current = 1000000.0
+        day_seconds = 24 * 3600
+
+        # Create a grid of options
+        strikes = np.array([95.0, 100.0, 105.0, 95.0, 100.0, 105.0])
+        expirations = np.array([
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+        ])
+        # IV smile: higher IV for OTM
+        ivs = np.array([0.25, 0.20, 0.24, 0.30, 0.25, 0.29])
+
+        surface = builder.compute_iv_surface_features(
+            strikes, expirations, ivs, spot, current
+        )
+
+        # 2 expiries x 3 moneyness = 6 values
+        assert len(surface) == 6
+        # Check that values are reasonable (not all NaN)
+        assert not np.all(np.isnan(surface))
+
+    def test_compute_aggregated_greeks(self) -> None:
+        """Aggregated Greeks computed correctly."""
+        builder = OptionsFeatureBuilder()
+
+        deltas = np.array([0.5, 0.3, -0.4, -0.6])  # Call, call, put, put
+        gammas = np.array([0.05, 0.03, 0.04, 0.06])
+        vegas = np.array([10.0, 8.0, 9.0, 11.0])
+        thetas = np.array([-0.5, -0.4, -0.3, -0.6])
+        open_interests = np.array([1000.0, 500.0, 800.0, 700.0])
+        option_types = np.array([1, 1, -1, -1], dtype=np.int8)
+
+        greeks = builder.compute_aggregated_greeks(
+            deltas, gammas, vegas, thetas, open_interests, option_types
+        )
+
+        assert len(greeks) == 4
+        # Net delta: OI-weighted average
+        total_oi = 3000.0
+        expected_delta = (0.5 * 1000 + 0.3 * 500 - 0.4 * 800 - 0.6 * 700) / total_oi
+        assert np.isclose(greeks[0], expected_delta)
+
+    def test_compute_aggregated_greeks_zero_oi(self) -> None:
+        """Returns NaN when total OI is zero."""
+        builder = OptionsFeatureBuilder()
+
+        greeks = builder.compute_aggregated_greeks(
+            np.array([0.5]),
+            np.array([0.05]),
+            np.array([10.0]),
+            np.array([-0.5]),
+            np.array([0.0]),  # Zero OI
+            np.array([1], dtype=np.int8),
+        )
+
+        assert np.all(np.isnan(greeks))
+
+    def test_compute_put_call_ratios(self) -> None:
+        """Put/call ratios computed correctly."""
+        builder = OptionsFeatureBuilder()
+
+        option_types = np.array([1, 1, -1, -1], dtype=np.int8)
+        volumes = np.array([1000.0, 500.0, 800.0, 1200.0])
+        open_interests = np.array([5000.0, 3000.0, 4000.0, 6000.0])
+
+        ratios = builder.compute_put_call_ratios(option_types, volumes, open_interests)
+
+        # Volume ratio: put_vol / call_vol = 2000 / 1500 = 1.333
+        assert np.isclose(ratios[0], 2000 / 1500)
+        # OI ratio: put_oi / call_oi = 10000 / 8000 = 1.25
+        assert np.isclose(ratios[1], 10000 / 8000)
+
+    def test_compute_put_call_ratios_no_calls(self) -> None:
+        """Returns NaN when no call volume/OI."""
+        builder = OptionsFeatureBuilder()
+
+        option_types = np.array([-1, -1], dtype=np.int8)
+        volumes = np.array([1000.0, 500.0])
+        open_interests = np.array([5000.0, 3000.0])
+
+        ratios = builder.compute_put_call_ratios(option_types, volumes, open_interests)
+
+        assert np.isnan(ratios[0])  # No call volume
+        assert np.isnan(ratios[1])  # No call OI
+
+    def test_compute_term_structure_slope_contango(self) -> None:
+        """Term structure slope positive for contango (IV increases with DTE)."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 30, 60, 90))
+        builder = OptionsFeatureBuilder(config)
+
+        # IV increases with DTE (contango)
+        atm_ivs = np.array([0.20, 0.22, 0.24, 0.26])
+
+        slope = builder.compute_term_structure_slope(atm_ivs)
+
+        # Positive slope
+        assert slope > 0
+
+    def test_compute_term_structure_slope_backwardation(self) -> None:
+        """Term structure slope negative for backwardation (IV decreases with DTE)."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 30, 60, 90))
+        builder = OptionsFeatureBuilder(config)
+
+        # IV decreases with DTE (backwardation)
+        atm_ivs = np.array([0.30, 0.26, 0.24, 0.22])
+
+        slope = builder.compute_term_structure_slope(atm_ivs)
+
+        # Negative slope
+        assert slope < 0
+
+    def test_compute_term_structure_slope_flat(self) -> None:
+        """Term structure slope near zero for flat curve."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 30, 60, 90))
+        builder = OptionsFeatureBuilder(config)
+
+        # Flat IV term structure
+        atm_ivs = np.array([0.25, 0.25, 0.25, 0.25])
+
+        slope = builder.compute_term_structure_slope(atm_ivs)
+
+        assert np.isclose(slope, 0.0, atol=1e-10)
+
+    def test_compute_term_structure_slope_insufficient_data(self) -> None:
+        """Returns NaN with fewer than 2 valid data points."""
+        config = OptionsFeatureConfig(expiry_buckets_days=(7, 30, 60, 90))
+        builder = OptionsFeatureBuilder(config)
+
+        # Only one valid IV
+        atm_ivs = np.array([0.25, np.nan, np.nan, np.nan])
+
+        slope = builder.compute_term_structure_slope(atm_ivs)
+
+        assert np.isnan(slope)
+
+    def test_compute_features_all_enabled(self) -> None:
+        """compute_features returns all features when enabled."""
+        config = OptionsFeatureConfig(
+            iv_moneyness_buckets=(0.95, 1.0, 1.05),
+            expiry_buckets_days=(7, 30),
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        spot = 100.0
+        current = 1000000.0
+        day_seconds = 24 * 3600
+
+        strikes = np.array([95.0, 100.0, 105.0, 95.0, 100.0, 105.0])
+        expirations = np.array([
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 7 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+            current + 30 * day_seconds,
+        ])
+        ivs = np.array([0.25, 0.20, 0.24, 0.30, 0.25, 0.29])
+        option_types = np.array([1, 1, 1, -1, -1, -1], dtype=np.int8)
+        deltas = np.array([0.3, 0.5, 0.7, -0.7, -0.5, -0.3])
+        gammas = np.array([0.05, 0.04, 0.03, 0.03, 0.04, 0.05])
+        vegas = np.array([10.0, 12.0, 10.0, 10.0, 12.0, 10.0])
+        thetas = np.array([-0.5, -0.4, -0.3, -0.3, -0.4, -0.5])
+        volumes = np.array([100.0, 200.0, 150.0, 180.0, 250.0, 120.0])
+        open_interests = np.array([1000.0, 2000.0, 1500.0, 1800.0, 2500.0, 1200.0])
+
+        features = builder.compute_features(
+            strikes,
+            expirations,
+            ivs,
+            spot,
+            current,
+            option_types=option_types,
+            deltas=deltas,
+            gammas=gammas,
+            vegas=vegas,
+            thetas=thetas,
+            volumes=volumes,
+            open_interests=open_interests,
+        )
+
+        # IV surface: 2 expiries x 3 moneyness = 6
+        # Greeks: 4
+        # Put/call ratios: 2
+        # Term structure: 1
+        # Total: 13
+        expected_features = 6 + 4 + 2 + 1
+        assert len(features) == expected_features
+        assert features.shape == (expected_features,)
+
+    def test_compute_features_iv_surface_only(self) -> None:
+        """compute_features with only IV surface enabled."""
+        config = OptionsFeatureConfig(
+            include_iv_surface=True,
+            include_greeks=False,
+            include_put_call_ratio=False,
+            include_term_structure=False,
+            iv_moneyness_buckets=(1.0,),
+            expiry_buckets_days=(30,),
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        spot = 100.0
+        current = 1000000.0
+        day_seconds = 24 * 3600
+
+        strikes = np.array([100.0])
+        expirations = np.array([current + 30 * day_seconds])
+        ivs = np.array([0.25])
+
+        features = builder.compute_features(
+            strikes, expirations, ivs, spot, current
+        )
+
+        # Only 1 IV surface point
+        assert len(features) == 1
+
+    def test_compute_features_requires_greeks_data(self) -> None:
+        """compute_features raises error when Greeks data missing."""
+        config = OptionsFeatureConfig(include_greeks=True)
+        builder = OptionsFeatureBuilder(config)
+
+        with pytest.raises(ValueError, match="Greeks data required"):
+            builder.compute_features(
+                np.array([100.0]),
+                np.array([1000000.0]),
+                np.array([0.25]),
+                100.0,
+                1000000.0,
+            )
+
+    def test_compute_features_requires_ratio_data(self) -> None:
+        """compute_features raises error when ratio data missing."""
+        config = OptionsFeatureConfig(
+            include_greeks=False,
+            include_put_call_ratio=True,
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        with pytest.raises(ValueError, match="option_types, volumes, and open_interests"):
+            builder.compute_features(
+                np.array([100.0]),
+                np.array([1000000.0]),
+                np.array([0.25]),
+                100.0,
+                1000000.0,
+            )
+
+    def test_compute_features_empty_when_all_disabled(self) -> None:
+        """compute_features returns empty array when all features disabled."""
+        config = OptionsFeatureConfig(
+            include_iv_surface=False,
+            include_greeks=False,
+            include_put_call_ratio=False,
+            include_term_structure=False,
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        features = builder.compute_features(
+            np.array([100.0]),
+            np.array([1000000.0]),
+            np.array([0.25]),
+            100.0,
+            1000000.0,
+        )
+
+        assert len(features) == 0
+
+    def test_get_feature_names(self) -> None:
+        """Feature names match expected format."""
+        config = OptionsFeatureConfig(
+            iv_moneyness_buckets=(0.95, 1.0, 1.05),
+            expiry_buckets_days=(7, 30),
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        names = builder.get_feature_names()
+
+        # IV surface: 6 names (2 expiry x 3 moneyness)
+        # Greeks: 4
+        # Ratios: 2
+        # Term structure: 1
+        assert len(names) == 13
+
+        # Check IV surface naming format
+        assert "iv_7d_m95" in names
+        assert "iv_30d_m100" in names
+        assert "iv_7d_m105" in names
+
+        # Check Greeks names
+        assert "net_delta" in names
+        assert "total_gamma" in names
+        assert "total_vega" in names
+        assert "total_theta" in names
+
+        # Check ratio names
+        assert "volume_pc_ratio" in names
+        assert "oi_pc_ratio" in names
+
+        # Check term structure name
+        assert "iv_term_slope" in names
+
+    def test_get_feature_names_minimal(self) -> None:
+        """Feature names with minimal config."""
+        config = OptionsFeatureConfig(
+            include_iv_surface=False,
+            include_greeks=False,
+            include_put_call_ratio=True,
+            include_term_structure=False,
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        names = builder.get_feature_names()
+
+        assert names == ["volume_pc_ratio", "oi_pc_ratio"]
+
+    def test_num_features(self) -> None:
+        """num_features property returns correct count."""
+        config = OptionsFeatureConfig(
+            iv_moneyness_buckets=(0.95, 1.0, 1.05),
+            expiry_buckets_days=(7, 30),
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        # 6 IV surface + 4 Greeks + 2 ratios + 1 term structure = 13
+        assert builder.num_features == 13
+
+    def test_num_features_default(self) -> None:
+        """num_features with default config."""
+        builder = OptionsFeatureBuilder()
+
+        # 4 expiry x 5 moneyness = 20 IV surface
+        # + 4 Greeks + 2 ratios + 1 term structure = 27
+        assert builder.num_features == 27
+
+    def test_num_features_minimal(self) -> None:
+        """num_features with minimal config."""
+        config = OptionsFeatureConfig(
+            include_iv_surface=False,
+            include_greeks=False,
+            include_put_call_ratio=False,
+            include_term_structure=True,
+        )
+        builder = OptionsFeatureBuilder(config)
+
+        assert builder.num_features == 1
