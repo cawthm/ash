@@ -443,7 +443,37 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `get_average_bucket()` to find bucket containing ratio 1.0
   - Default: 101 buckets, 0.1x to 5.0x relative volume
 
-### Phase 3: Feature Engineering - NOT STARTED
+### Phase 3: Feature Engineering - IN PROGRESS
+
+| File | Status | Type Coverage | Errors | Notes |
+|------|--------|---------------|--------|-------|
+| `data/processors/feature_builder.py` | Complete | 100% | 0 | Price & volatility features |
+| `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 42 tests passing |
+| `data/processors/sequence_builder.py` | Not Started | - | - | Temporal alignment |
+
+**Implemented**:
+- `PriceFeatureConfig` dataclass for price feature configuration
+- `PriceFeatureBuilder` class with:
+  - `compute_log_returns()` for single-window log returns
+  - `compute_returns_multi_window()` for all configured lookback windows
+  - `compute_vwap()` for Volume Weighted Average Price
+  - `compute_vwap_deviation()` for price deviation from VWAP
+  - `compute_features()` to compute all price features
+  - Default: returns at 1s, 5s, 10s, 30s, 60s, 120s, 300s windows + VWAP
+- `VolatilityFeatureConfig` dataclass for volatility feature configuration
+- `VolatilityFeatureBuilder` class with:
+  - `compute_realized_volatility()` annualized rolling RV
+  - `compute_rv_multi_window()` for all configured RV windows
+  - `compute_volatility_of_volatility()` rolling std of RV
+  - `compute_iv_rv_spread()` for IV - RV calculation
+  - `compute_features()` to compute all volatility features
+  - Default: RV at 60s, 300s, 600s + IV/RV spread + vol-of-vol
+
+**Remaining Phase 3 work**:
+- Order flow features (trade direction imbalance, arrival rate)
+- Options features (IV surface, Greeks, put/call ratios)
+- Cross-asset features (if enabled)
+- Sequence builder for temporal alignment
 
 ### Phase 4: Model Architecture - NOT STARTED
 
@@ -456,17 +486,18 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 3: Feature engineering pipeline
+2. Phase 3: Complete remaining feature engineering (order flow, options features, sequence builder)
 3. Phase 4: Model architecture and training
 4. Phase 5: Training pipeline
 5. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.4*
+*Document version: 1.5*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.5: Phase 3 started - implemented feature_builder.py with PriceFeatureBuilder and VolatilityFeatureBuilder (42 tests, 100% type coverage).
 - v1.4: Phase 2 complete - all discretizers implemented (LogReturn, Volatility, Volume) with 74 tests, 100% type coverage.
 - v1.3: Phase 2 started - implemented discretizer.py with log-return buckets (29 tests, 100% type coverage).
 - v1.2: Phase 0 complete - project setup with pyproject.toml, directory structure, configs, and verified type checking.
