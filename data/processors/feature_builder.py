@@ -3,6 +3,7 @@
 This module implements feature computation for:
 - Price history features (returns at multiple lookback windows, VWAP)
 - Volatility features (realized volatility, IV/RV spread)
+- Order flow features (trade direction imbalance, size distribution, arrival rate)
 
 Features are computed from raw price/volume data and produce fixed-length
 feature vectors suitable for model input.
@@ -512,5 +513,293 @@ class VolatilityFeatureBuilder:
         if self.config.include_iv_rv_spread:
             count += 1
         if self.config.include_vol_of_vol:
+            count += 1
+        return count
+
+
+@dataclass(frozen=True)
+class OrderFlowFeatureConfig:
+    """Configuration for order flow features.
+
+    Attributes:
+        imbalance_window: Window (in samples) for trade direction imbalance.
+        include_size_distribution: Whether to include trade size distribution features.
+        include_arrival_rate: Whether to include trade arrival rate.
+        size_quantiles: Quantiles for trade size distribution (as fractions).
+        arrival_rate_window: Window (in samples) for arrival rate calculation.
+    """
+
+    imbalance_window: int = 30
+    include_size_distribution: bool = True
+    include_arrival_rate: bool = True
+    size_quantiles: tuple[float, ...] = (0.25, 0.5, 0.75)
+    arrival_rate_window: int = 60
+
+
+class OrderFlowFeatureBuilder:
+    """Computes order flow features from trade data.
+
+    Features computed:
+    - Trade direction imbalance (net buy/sell pressure)
+    - Trade size distribution quantiles (optional)
+    - Arrival rate (trades per second, optional)
+
+    Trade direction is inferred using the tick rule (comparing price
+    to previous price).
+
+    Attributes:
+        config: Order flow feature configuration.
+    """
+
+    def __init__(self, config: OrderFlowFeatureConfig | None = None) -> None:
+        """Initialize feature builder with configuration.
+
+        Args:
+            config: Order flow feature configuration. Uses defaults if None.
+        """
+        self.config = config or OrderFlowFeatureConfig()
+
+    def infer_trade_direction(
+        self,
+        prices: NDArray[np.floating[Any]],
+    ) -> NDArray[np.signedinteger[Any]]:
+        """Infer trade direction using the tick rule.
+
+        The tick rule classifies trades as:
+        - Buy (+1): if price > previous price (uptick)
+        - Sell (-1): if price < previous price (downtick)
+        - Unknown (0): if price == previous price (zero tick)
+
+        For zero ticks, we propagate the last known direction.
+
+        Args:
+            prices: 1D array of trade prices.
+
+        Returns:
+            Array of trade directions: +1 (buy), -1 (sell), 0 (unknown).
+        """
+        prices = np.asarray(prices, dtype=np.float64)
+        if prices.ndim != 1:
+            raise ValueError("prices must be 1-dimensional")
+
+        n = len(prices)
+        if n == 0:
+            return np.array([], dtype=np.int64)
+
+        direction = np.zeros(n, dtype=np.int64)
+
+        # Compare each price to previous
+        if n > 1:
+            diff = prices[1:] - prices[:-1]
+            direction[1:] = np.sign(diff).astype(np.int64)
+
+            # Propagate last known direction for zero ticks
+            last_dir = 0
+            for i in range(n):
+                if direction[i] != 0:
+                    last_dir = direction[i]
+                else:
+                    direction[i] = last_dir
+
+        return direction
+
+    def compute_trade_imbalance(
+        self,
+        directions: NDArray[np.signedinteger[Any]],
+        sizes: NDArray[np.floating[Any]],
+        window: int,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute volume-weighted trade direction imbalance.
+
+        Imbalance = (buy_volume - sell_volume) / total_volume
+
+        Args:
+            directions: Trade directions (+1 buy, -1 sell).
+            sizes: Trade sizes (volumes).
+            window: Rolling window size.
+
+        Returns:
+            Imbalance values in range [-1, 1]. NaN where window is invalid.
+        """
+        directions = np.asarray(directions, dtype=np.int64)
+        sizes = np.asarray(sizes, dtype=np.float64)
+
+        if directions.shape != sizes.shape:
+            raise ValueError("directions and sizes must have same shape")
+        if directions.ndim != 1:
+            raise ValueError("directions must be 1-dimensional")
+        if window < 1:
+            raise ValueError("window must be at least 1")
+
+        n = len(directions)
+        result = np.full(n, np.nan, dtype=np.float64)
+
+        if window > n:
+            return result
+
+        # Signed volume: positive for buys, negative for sells
+        signed_volume = directions.astype(np.float64) * sizes
+
+        # Rolling sums using cumsum
+        cumsum_signed = np.cumsum(signed_volume)
+        cumsum_total = np.cumsum(np.abs(sizes))
+
+        # First valid position
+        if cumsum_total[window - 1] > 0:
+            result[window - 1] = cumsum_signed[window - 1] / cumsum_total[window - 1]
+
+        # Remaining positions
+        if window < n:
+            rolling_signed = cumsum_signed[window:] - cumsum_signed[:-window]
+            rolling_total = cumsum_total[window:] - cumsum_total[:-window]
+            valid_mask = rolling_total > 0
+            result[window:][valid_mask] = rolling_signed[valid_mask] / rolling_total[valid_mask]
+
+        return result
+
+    def compute_size_quantiles(
+        self,
+        sizes: NDArray[np.floating[Any]],
+        window: int,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute rolling quantiles of trade sizes.
+
+        Args:
+            sizes: 1D array of trade sizes.
+            window: Rolling window size.
+
+        Returns:
+            2D array of shape (len(sizes), num_quantiles) with quantile values.
+            NaN where window is invalid.
+        """
+        sizes = np.asarray(sizes, dtype=np.float64)
+        if sizes.ndim != 1:
+            raise ValueError("sizes must be 1-dimensional")
+        if window < 1:
+            raise ValueError("window must be at least 1")
+
+        n = len(sizes)
+        num_quantiles = len(self.config.size_quantiles)
+        result = np.full((n, num_quantiles), np.nan, dtype=np.float64)
+
+        if window > n:
+            return result
+
+        # Use stride_tricks for efficient rolling window
+        # But for simplicity and clarity, use explicit loop
+        # (can be optimized later if needed)
+        for i in range(window - 1, n):
+            window_data = sizes[i - window + 1 : i + 1]
+            for j, q in enumerate(self.config.size_quantiles):
+                result[i, j] = np.quantile(window_data, q)
+
+        return result
+
+    def compute_arrival_rate(
+        self,
+        timestamps: NDArray[np.floating[Any]],
+        window: int,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute trade arrival rate (trades per second).
+
+        Args:
+            timestamps: 1D array of trade timestamps (in seconds).
+            window: Number of trades to use for rate calculation.
+
+        Returns:
+            Arrival rate in trades per second. NaN where window is invalid.
+        """
+        timestamps = np.asarray(timestamps, dtype=np.float64)
+        if timestamps.ndim != 1:
+            raise ValueError("timestamps must be 1-dimensional")
+        if window < 2:
+            raise ValueError("window must be at least 2 for rate calculation")
+
+        n = len(timestamps)
+        result = np.full(n, np.nan, dtype=np.float64)
+
+        if window > n:
+            return result
+
+        # Rate = (window - 1) trades / time_elapsed
+        for i in range(window - 1, n):
+            time_elapsed = timestamps[i] - timestamps[i - window + 1]
+            if time_elapsed > 0:
+                result[i] = (window - 1) / time_elapsed
+
+        return result
+
+    def compute_features(
+        self,
+        prices: NDArray[np.floating[Any]],
+        sizes: NDArray[np.floating[Any]],
+        timestamps: NDArray[np.floating[Any]] | None = None,
+    ) -> NDArray[np.floating[Any]]:
+        """Compute all order flow features.
+
+        Args:
+            prices: 1D array of trade prices.
+            sizes: 1D array of trade sizes.
+            timestamps: 1D array of timestamps (required if include_arrival_rate).
+
+        Returns:
+            2D array of shape (len(prices), num_features) with all features.
+            Feature order: [imbalance, size_quantiles..., arrival_rate]
+        """
+        prices = np.asarray(prices, dtype=np.float64)
+        sizes = np.asarray(sizes, dtype=np.float64)
+
+        if prices.shape != sizes.shape:
+            raise ValueError("prices and sizes must have same shape")
+
+        n = len(prices)
+        features_list: list[NDArray[np.floating[Any]]] = []
+
+        # Trade direction imbalance
+        directions = self.infer_trade_direction(prices)
+        imbalance = self.compute_trade_imbalance(
+            directions, sizes, self.config.imbalance_window
+        )
+        features_list.append(imbalance.reshape(n, 1))
+
+        # Size distribution quantiles
+        if self.config.include_size_distribution:
+            quantiles = self.compute_size_quantiles(
+                sizes, self.config.imbalance_window
+            )
+            features_list.append(quantiles)
+
+        # Arrival rate
+        if self.config.include_arrival_rate:
+            if timestamps is None:
+                raise ValueError("timestamps required when include_arrival_rate is True")
+            arrival = self.compute_arrival_rate(
+                timestamps, self.config.arrival_rate_window
+            )
+            features_list.append(arrival.reshape(n, 1))
+
+        return np.hstack(features_list)
+
+    def get_feature_names(self) -> list[str]:
+        """Get ordered list of feature names.
+
+        Returns:
+            List of feature names corresponding to columns in compute_features output.
+        """
+        names = ["trade_imbalance"]
+        if self.config.include_size_distribution:
+            for q in self.config.size_quantiles:
+                names.append(f"size_q{int(q * 100)}")
+        if self.config.include_arrival_rate:
+            names.append("arrival_rate")
+        return names
+
+    @property
+    def num_features(self) -> int:
+        """Total number of features produced by compute_features."""
+        count = 1  # imbalance
+        if self.config.include_size_distribution:
+            count += len(self.config.size_quantiles)
+        if self.config.include_arrival_rate:
             count += 1
         return count

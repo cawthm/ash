@@ -447,8 +447,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
-| `data/processors/feature_builder.py` | Complete | 100% | 0 | Price & volatility features |
-| `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 42 tests passing |
+| `data/processors/feature_builder.py` | Complete | 100% | 0 | Price, volatility & order flow features |
+| `tests/python/test_feature_builder.py` | Complete | 100% | 0 | 69 tests passing |
 | `data/processors/sequence_builder.py` | Not Started | - | - | Temporal alignment |
 
 **Implemented**:
@@ -468,9 +468,16 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `compute_iv_rv_spread()` for IV - RV calculation
   - `compute_features()` to compute all volatility features
   - Default: RV at 60s, 300s, 600s + IV/RV spread + vol-of-vol
+- `OrderFlowFeatureConfig` dataclass for order flow feature configuration
+- `OrderFlowFeatureBuilder` class with:
+  - `infer_trade_direction()` using tick rule with zero-tick propagation
+  - `compute_trade_imbalance()` volume-weighted buy/sell pressure
+  - `compute_size_quantiles()` rolling trade size distribution
+  - `compute_arrival_rate()` trades per second calculation
+  - `compute_features()` to compute all order flow features
+  - Default: 30s imbalance window, quantiles (25/50/75%), 60s arrival rate window
 
 **Remaining Phase 3 work**:
-- Order flow features (trade direction imbalance, arrival rate)
 - Options features (IV surface, Greeks, put/call ratios)
 - Cross-asset features (if enabled)
 - Sequence builder for temporal alignment
@@ -493,10 +500,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 ---
 
-*Document version: 1.5*
+*Document version: 1.6*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v1.6: Phase 3 continued - added OrderFlowFeatureBuilder with trade direction imbalance, size quantiles, and arrival rate (69 tests total, 100% type coverage).
 - v1.5: Phase 3 started - implemented feature_builder.py with PriceFeatureBuilder and VolatilityFeatureBuilder (42 tests, 100% type coverage).
 - v1.4: Phase 2 complete - all discretizers implemented (LogReturn, Volatility, Volume) with 74 tests, 100% type coverage.
 - v1.3: Phase 2 started - implemented discretizer.py with log-return buckets (29 tests, 100% type coverage).

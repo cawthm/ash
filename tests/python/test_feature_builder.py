@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from data.processors.feature_builder import (
+    OrderFlowFeatureBuilder,
+    OrderFlowFeatureConfig,
     PriceFeatureBuilder,
     PriceFeatureConfig,
     VolatilityFeatureBuilder,
@@ -437,6 +439,318 @@ class TestVolatilityFeatureBuilder:
         assert builder_minimal.num_features == 1
 
 
+class TestOrderFlowFeatureConfig:
+    """Tests for OrderFlowFeatureConfig dataclass."""
+
+    def test_default_config(self) -> None:
+        """Default config has expected values."""
+        config = OrderFlowFeatureConfig()
+        assert config.imbalance_window == 30
+        assert config.include_size_distribution is True
+        assert config.include_arrival_rate is True
+        assert config.size_quantiles == (0.25, 0.5, 0.75)
+        assert config.arrival_rate_window == 60
+
+    def test_custom_config(self) -> None:
+        """Custom config accepts valid values."""
+        config = OrderFlowFeatureConfig(
+            imbalance_window=60,
+            include_size_distribution=False,
+            include_arrival_rate=False,
+            size_quantiles=(0.1, 0.5, 0.9),
+            arrival_rate_window=30,
+        )
+        assert config.imbalance_window == 60
+        assert config.include_size_distribution is False
+        assert config.include_arrival_rate is False
+        assert config.size_quantiles == (0.1, 0.5, 0.9)
+        assert config.arrival_rate_window == 30
+
+
+class TestOrderFlowFeatureBuilder:
+    """Tests for OrderFlowFeatureBuilder class."""
+
+    def test_default_initialization(self) -> None:
+        """Builder initializes with default config."""
+        builder = OrderFlowFeatureBuilder()
+        assert builder.config.imbalance_window == 30
+
+    def test_infer_trade_direction_upticks(self) -> None:
+        """Upticks are classified as buys (+1)."""
+        builder = OrderFlowFeatureBuilder()
+        prices = np.array([100.0, 101.0, 102.0, 103.0])
+        directions = builder.infer_trade_direction(prices)
+
+        assert directions[0] == 0  # First has no prior
+        assert directions[1] == 1  # Uptick
+        assert directions[2] == 1  # Uptick
+        assert directions[3] == 1  # Uptick
+
+    def test_infer_trade_direction_downticks(self) -> None:
+        """Downticks are classified as sells (-1)."""
+        builder = OrderFlowFeatureBuilder()
+        prices = np.array([103.0, 102.0, 101.0, 100.0])
+        directions = builder.infer_trade_direction(prices)
+
+        assert directions[0] == 0  # First has no prior
+        assert directions[1] == -1  # Downtick
+        assert directions[2] == -1  # Downtick
+        assert directions[3] == -1  # Downtick
+
+    def test_infer_trade_direction_zero_ticks(self) -> None:
+        """Zero ticks propagate last known direction."""
+        builder = OrderFlowFeatureBuilder()
+        prices = np.array([100.0, 101.0, 101.0, 101.0, 100.0])
+        directions = builder.infer_trade_direction(prices)
+
+        assert directions[0] == 0  # First
+        assert directions[1] == 1  # Uptick
+        assert directions[2] == 1  # Zero tick, propagates +1
+        assert directions[3] == 1  # Zero tick, propagates +1
+        assert directions[4] == -1  # Downtick
+
+    def test_infer_trade_direction_empty(self) -> None:
+        """Empty array returns empty result."""
+        builder = OrderFlowFeatureBuilder()
+        directions = builder.infer_trade_direction(np.array([]))
+        assert len(directions) == 0
+
+    def test_infer_trade_direction_single(self) -> None:
+        """Single element returns zero direction."""
+        builder = OrderFlowFeatureBuilder()
+        directions = builder.infer_trade_direction(np.array([100.0]))
+        assert len(directions) == 1
+        assert directions[0] == 0
+
+    def test_infer_trade_direction_rejects_2d(self) -> None:
+        """2D input raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="1-dimensional"):
+            builder.infer_trade_direction(np.array([[100.0, 101.0]]))
+
+    def test_compute_trade_imbalance_all_buys(self) -> None:
+        """All buys gives imbalance of +1."""
+        builder = OrderFlowFeatureBuilder()
+        directions = np.array([1, 1, 1, 1, 1])
+        sizes = np.array([100.0, 100.0, 100.0, 100.0, 100.0])
+        imbalance = builder.compute_trade_imbalance(directions, sizes, window=3)
+
+        assert np.isnan(imbalance[0])
+        assert np.isnan(imbalance[1])
+        assert np.isclose(imbalance[2], 1.0)
+        assert np.isclose(imbalance[3], 1.0)
+        assert np.isclose(imbalance[4], 1.0)
+
+    def test_compute_trade_imbalance_all_sells(self) -> None:
+        """All sells gives imbalance of -1."""
+        builder = OrderFlowFeatureBuilder()
+        directions = np.array([-1, -1, -1, -1, -1])
+        sizes = np.array([100.0, 100.0, 100.0, 100.0, 100.0])
+        imbalance = builder.compute_trade_imbalance(directions, sizes, window=3)
+
+        assert np.isclose(imbalance[2], -1.0)
+        assert np.isclose(imbalance[4], -1.0)
+
+    def test_compute_trade_imbalance_balanced(self) -> None:
+        """Balanced buys/sells gives imbalance of 0."""
+        builder = OrderFlowFeatureBuilder()
+        directions = np.array([1, -1, 1, -1])
+        sizes = np.array([100.0, 100.0, 100.0, 100.0])
+        imbalance = builder.compute_trade_imbalance(directions, sizes, window=2)
+
+        # Window of 2: [1, -1] -> (100 - 100) / 200 = 0
+        assert np.isclose(imbalance[1], 0.0)
+        assert np.isclose(imbalance[2], 0.0)
+        assert np.isclose(imbalance[3], 0.0)
+
+    def test_compute_trade_imbalance_volume_weighted(self) -> None:
+        """Imbalance is volume-weighted."""
+        builder = OrderFlowFeatureBuilder()
+        directions = np.array([1, -1, 1])
+        sizes = np.array([300.0, 100.0, 100.0])  # Big buy, small sell, small buy
+        imbalance = builder.compute_trade_imbalance(directions, sizes, window=3)
+
+        # (300 - 100 + 100) / (300 + 100 + 100) = 300/500 = 0.6
+        expected = (300 - 100 + 100) / 500
+        assert np.isclose(imbalance[2], expected)
+
+    def test_compute_trade_imbalance_mismatched_shapes(self) -> None:
+        """Mismatched shapes raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="same shape"):
+            builder.compute_trade_imbalance(
+                np.array([1, -1, 1]),
+                np.array([100.0, 100.0]),
+                window=2,
+            )
+
+    def test_compute_trade_imbalance_invalid_window(self) -> None:
+        """Window < 1 raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="at least 1"):
+            builder.compute_trade_imbalance(
+                np.array([1, -1]),
+                np.array([100.0, 100.0]),
+                window=0,
+            )
+
+    def test_compute_size_quantiles(self) -> None:
+        """Size quantiles are computed correctly."""
+        config = OrderFlowFeatureConfig(size_quantiles=(0.25, 0.5, 0.75))
+        builder = OrderFlowFeatureBuilder(config)
+        sizes = np.array([10.0, 20.0, 30.0, 40.0, 50.0])
+        quantiles = builder.compute_size_quantiles(sizes, window=4)
+
+        # First 3 elements are NaN
+        assert np.all(np.isnan(quantiles[:3, :]))
+        # At index 3: window = [10, 20, 30, 40]
+        expected_q25 = np.quantile([10, 20, 30, 40], 0.25)
+        expected_q50 = np.quantile([10, 20, 30, 40], 0.5)
+        expected_q75 = np.quantile([10, 20, 30, 40], 0.75)
+        assert np.isclose(quantiles[3, 0], expected_q25)
+        assert np.isclose(quantiles[3, 1], expected_q50)
+        assert np.isclose(quantiles[3, 2], expected_q75)
+
+    def test_compute_size_quantiles_rejects_2d(self) -> None:
+        """2D input raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="1-dimensional"):
+            builder.compute_size_quantiles(np.array([[10.0, 20.0]]), window=2)
+
+    def test_compute_arrival_rate(self) -> None:
+        """Arrival rate is computed correctly."""
+        builder = OrderFlowFeatureBuilder()
+        # 5 trades over 4 seconds = 1 trade/second
+        timestamps = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+        rate = builder.compute_arrival_rate(timestamps, window=5)
+
+        # At index 4: 4 trades in 4 seconds = 1 trade/sec
+        assert np.isnan(rate[0])
+        assert np.isnan(rate[3])
+        assert np.isclose(rate[4], 1.0)
+
+    def test_compute_arrival_rate_variable_timing(self) -> None:
+        """Arrival rate handles variable timing."""
+        builder = OrderFlowFeatureBuilder()
+        # Trades at 0, 0.5, 1.0, 2.0 (accelerating, then slowing)
+        timestamps = np.array([0.0, 0.5, 1.0, 2.0])
+        rate = builder.compute_arrival_rate(timestamps, window=3)
+
+        # At index 2: 2 trades in 1 second = 2 trades/sec
+        assert np.isclose(rate[2], 2.0)
+        # At index 3: 2 trades in 1.5 seconds = 1.33 trades/sec
+        assert np.isclose(rate[3], 2 / 1.5)
+
+    def test_compute_arrival_rate_rejects_small_window(self) -> None:
+        """Window < 2 raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="at least 2"):
+            builder.compute_arrival_rate(np.array([0.0, 1.0]), window=1)
+
+    def test_compute_features(self) -> None:
+        """compute_features returns correct shape."""
+        config = OrderFlowFeatureConfig(
+            imbalance_window=3,
+            include_size_distribution=True,
+            include_arrival_rate=True,
+            size_quantiles=(0.5,),
+            arrival_rate_window=3,
+        )
+        builder = OrderFlowFeatureBuilder(config)
+
+        prices = np.array([100.0, 101.0, 100.5, 101.5, 102.0])
+        sizes = np.array([100.0, 150.0, 200.0, 100.0, 150.0])
+        timestamps = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+
+        features = builder.compute_features(prices, sizes, timestamps)
+
+        # 1 imbalance + 1 quantile + 1 arrival rate = 3
+        assert features.shape == (5, 3)
+
+    def test_compute_features_minimal(self) -> None:
+        """compute_features with minimal options."""
+        config = OrderFlowFeatureConfig(
+            imbalance_window=2,
+            include_size_distribution=False,
+            include_arrival_rate=False,
+        )
+        builder = OrderFlowFeatureBuilder(config)
+
+        prices = np.array([100.0, 101.0, 102.0])
+        sizes = np.array([100.0, 100.0, 100.0])
+
+        features = builder.compute_features(prices, sizes)
+
+        # Only imbalance
+        assert features.shape == (3, 1)
+
+    def test_compute_features_requires_timestamps(self) -> None:
+        """compute_features with arrival_rate requires timestamps."""
+        config = OrderFlowFeatureConfig(include_arrival_rate=True)
+        builder = OrderFlowFeatureBuilder(config)
+
+        prices = np.array([100.0, 101.0, 102.0])
+        sizes = np.array([100.0, 100.0, 100.0])
+
+        with pytest.raises(ValueError, match="timestamps required"):
+            builder.compute_features(prices, sizes)
+
+    def test_compute_features_mismatched_shapes(self) -> None:
+        """Mismatched prices/sizes raises ValueError."""
+        builder = OrderFlowFeatureBuilder()
+        with pytest.raises(ValueError, match="same shape"):
+            builder.compute_features(
+                np.array([100.0, 101.0]),
+                np.array([100.0]),
+            )
+
+    def test_get_feature_names(self) -> None:
+        """Feature names match feature order."""
+        config = OrderFlowFeatureConfig(
+            include_size_distribution=True,
+            include_arrival_rate=True,
+            size_quantiles=(0.25, 0.5, 0.75),
+        )
+        builder = OrderFlowFeatureBuilder(config)
+
+        names = builder.get_feature_names()
+        assert names == [
+            "trade_imbalance",
+            "size_q25",
+            "size_q50",
+            "size_q75",
+            "arrival_rate",
+        ]
+
+    def test_get_feature_names_minimal(self) -> None:
+        """Feature names with minimal options."""
+        config = OrderFlowFeatureConfig(
+            include_size_distribution=False,
+            include_arrival_rate=False,
+        )
+        builder = OrderFlowFeatureBuilder(config)
+
+        names = builder.get_feature_names()
+        assert names == ["trade_imbalance"]
+
+    def test_num_features(self) -> None:
+        """num_features property returns correct count."""
+        config = OrderFlowFeatureConfig(
+            include_size_distribution=True,
+            include_arrival_rate=True,
+            size_quantiles=(0.25, 0.5, 0.75),
+        )
+        builder = OrderFlowFeatureBuilder(config)
+        assert builder.num_features == 5  # 1 + 3 + 1
+
+        config_minimal = OrderFlowFeatureConfig(
+            include_size_distribution=False,
+            include_arrival_rate=False,
+        )
+        builder_minimal = OrderFlowFeatureBuilder(config_minimal)
+        assert builder_minimal.num_features == 1
+
+
 class TestEdgeCases:
     """Tests for edge cases and numerical stability."""
 
@@ -444,11 +758,13 @@ class TestEdgeCases:
         """Empty arrays are handled gracefully."""
         price_builder = PriceFeatureBuilder()
         vol_builder = VolatilityFeatureBuilder()
+        order_builder = OrderFlowFeatureBuilder()
 
         empty = np.array([])
         assert price_builder.compute_log_returns(empty, window=1).shape == (0,)
         assert price_builder.compute_vwap(empty, empty, window=1).shape == (0,)
         assert vol_builder.compute_realized_volatility(empty, window=2).shape == (0,)
+        assert order_builder.infer_trade_direction(empty).shape == (0,)
 
     def test_single_element(self) -> None:
         """Single element arrays produce NaN (insufficient data)."""
