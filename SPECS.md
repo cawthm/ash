@@ -511,7 +511,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 |------|--------|---------------|--------|-------|
 | `models/architectures/losses.py` | Complete | 100% | 0 | EMD, soft-CE, focal losses |
 | `tests/python/test_losses.py` | Complete | 100% | 0 | 55 tests passing |
-| `models/architectures/price_transformer.py` | Not Started | - | - | - |
+| `models/architectures/price_transformer.py` | Complete | 100% | 0 | Transformer with multi-horizon heads |
+| `tests/python/test_price_transformer.py` | Complete | 100% | 0 | 59 tests passing |
 | `models/export/onnx_export.py` | Not Started | - | - | - |
 | `models/export/validate_export.py` | Not Started | - | - | - |
 
@@ -525,6 +526,17 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 - `FocalLoss` class for handling class imbalance in bucket classification
 - `MultiHorizonLoss` class for combining losses across prediction horizons
 - `get_loss_function()` factory for creating loss functions from config
+- `TransformerConfig` dataclass for model configuration
+- `PositionalEncoding` module for learned positional embeddings
+- `FeatureEmbedding` module for projecting input features to embedding space
+- `MultiHorizonHead` module for parallel classification heads per horizon
+- `PriceTransformer` main model class with:
+  - Configurable transformer encoder (layers, heads, dimensions)
+  - Optional [CLS] token or mean pooling for classification
+  - Causal or bidirectional attention modes
+  - Padding mask support for variable-length sequences
+  - `get_probabilities()` method for softmax outputs
+- `create_model()` and `create_model_from_dict()` factory functions
 
 ### Phase 5: Training Pipeline - NOT STARTED
 
@@ -535,17 +547,17 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 4 continued: Implement price_transformer.py model architecture
-3. Phase 4 continued: Implement ONNX export and validation
-4. Phase 5: Training pipeline
-5. Phase 6: Streaming integration and benchmarking
+2. Phase 4 continued: Implement ONNX export and validation
+3. Phase 5: Training pipeline
+4. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 1.9*
+*Document version: 2.0*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v2.0: Phase 4 continued - implemented price_transformer.py with PriceTransformer model, TransformerConfig, PositionalEncoding, FeatureEmbedding, MultiHorizonHead, and factory functions (59 tests, 100% type coverage, 338 tests total).
 - v1.9: Phase 4 started - implemented losses.py with EMDLoss, SoftCrossEntropyLoss, FocalLoss, and MultiHorizonLoss (55 tests, 100% type coverage, 279 tests total).
 - v1.8: Phase 3 complete - added SequenceBuilder for temporal alignment with forward-fill, overnight gap handling, and multi-source data alignment (224 tests total, 100% type coverage).
 - v1.7: Phase 3 continued - added OptionsFeatureBuilder with IV surface, Greeks, put/call ratios, and term structure slope (98 tests total, 100% type coverage).
