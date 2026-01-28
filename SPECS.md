@@ -513,7 +513,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `tests/python/test_losses.py` | Complete | 100% | 0 | 55 tests passing |
 | `models/architectures/price_transformer.py` | Complete | 100% | 0 | Transformer with multi-horizon heads |
 | `tests/python/test_price_transformer.py` | Complete | 100% | 0 | 59 tests passing |
-| `models/export/onnx_export.py` | Not Started | - | - | - |
+| `models/export/onnx_export.py` | Complete | 100% | 0 | ONNX export with exportable transformer |
+| `tests/python/test_onnx_export.py` | Complete | 100% | 0 | 32 tests passing |
 | `models/export/validate_export.py` | Not Started | - | - | - |
 
 **Implemented**:
@@ -537,6 +538,18 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - Padding mask support for variable-length sequences
   - `get_probabilities()` method for softmax outputs
 - `create_model()` and `create_model_from_dict()` factory functions
+- `ExportConfig` dataclass for ONNX export configuration
+- `ExportResult` dataclass for export operation results
+- `ONNXExporter` class for PyTorch → ONNX conversion with:
+  - Manual ONNX-exportable attention implementation (avoids fused kernels)
+  - Dynamic axes support for variable batch/sequence sizes
+  - Metadata embedding for model configuration
+  - Legacy TorchScript exporter for compatibility
+- `_ExportableMultiheadAttention` for ONNX-compatible attention
+- `_ExportableTransformerEncoderLayer` for unfused encoder layers
+- `_ExportableTransformerEncoder` wrapper for the full encoder
+- `export_model()`, `load_onnx_model()`, `check_model()`, `optimize_model()` utilities
+- `get_model_metadata()` for extracting embedded configuration
 
 ### Phase 5: Training Pipeline - NOT STARTED
 
@@ -547,16 +560,17 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 4 continued: Implement ONNX export and validation
+2. Phase 4 continued: Implement ONNX export validation (`validate_export.py`)
 3. Phase 5: Training pipeline
 4. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 2.0*
+*Document version: 2.1*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v2.1: Phase 4 continued - implemented onnx_export.py with ONNXExporter, ONNX-exportable transformer components (attention, encoder layer, encoder), export utilities, and metadata support (32 tests, 100% type coverage, 370 tests total).
 - v2.0: Phase 4 continued - implemented price_transformer.py with PriceTransformer model, TransformerConfig, PositionalEncoding, FeatureEmbedding, MultiHorizonHead, and factory functions (59 tests, 100% type coverage, 338 tests total).
 - v1.9: Phase 4 started - implemented losses.py with EMDLoss, SoftCrossEntropyLoss, FocalLoss, and MultiHorizonLoss (55 tests, 100% type coverage, 279 tests total).
 - v1.8: Phase 3 complete - added SequenceBuilder for temporal alignment with forward-fill, overnight gap handling, and multi-source data alignment (224 tests total, 100% type coverage).
