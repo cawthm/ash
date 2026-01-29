@@ -649,8 +649,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `inference-rs/Cargo.toml` | Complete | N/A | 0 | Dependencies configured (ort, ndarray, serde) |
 | `inference-rs/src/lib.rs` | Complete | N/A | 0 | Module exports |
 | `inference-rs/src/buffer.rs` | Complete | 7 passing | 0 | RollingBuffer and FeatureBuffer |
+| `inference-rs/src/features.rs` | Complete | 14 passing | 0 | Price & volatility feature computation (ported from Python) |
 | `inference-rs/src/predictor.rs` | Complete | 5 passing | 0 | PricePredictor with ONNX inference |
 | `inference-rs/benches/latency.rs` | Complete | N/A | 0 | Basic buffer benchmarks |
+| `tests/feature_parity/generate_vectors.py` | Complete | N/A | 0 | Python test vector generator (7 test cases) |
+| `inference-rs/tests/test_parity.rs` | Complete | 7 passing | 0 | Python↔Rust parity validation |
 
 **Implemented**:
 - `RollingBuffer<T>` generic circular buffer:
@@ -663,6 +666,20 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - Configurable lookback window and frequency
   - `update()` for ingesting new tick data
   - `has_sufficient_data()` check for inference readiness
+- **Feature computation (Rust port from Python)**:
+  - `PriceFeatureConfig` and `VolatilityFeatureConfig` for configuration
+  - `compute_log_returns()` - log returns with configurable lookback window
+  - `compute_returns_multi_window()` - returns at multiple windows
+  - `compute_vwap()` - Volume Weighted Average Price with rolling window
+  - `compute_vwap_deviation()` - price deviation from VWAP as log ratio
+  - `compute_realized_volatility()` - annualized RV using rolling standard deviation
+  - `compute_rv_multi_window()` - RV at multiple windows
+  - Edge case handling: zero/negative prices, insufficient data
+- **Parity testing infrastructure**:
+  - Python test vector generator with 7 test cases (basic returns, VWAP, RV, edge cases, realistic data)
+  - Rust parity tests with NaN-aware equality checking
+  - Floating-point tolerance validation (1e-10 for returns/VWAP, 1e-8 for volatility)
+  - All parity tests passing (validates no train/serve skew)
 - `Horizon` enum for prediction time horizons (1s to 600s)
 - `Config` struct for predictor configuration
 - `PredictionResult` with probability distributions per horizon:
@@ -672,13 +689,13 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `update()` ingests tick data into buffers
   - `predict()` runs ONNX inference and returns distributions
   - `clear()` resets state (for market gaps)
-  - Placeholder feature computation (TODO: port from Python)
+  - Placeholder feature computation (TODO: integrate features.rs functions)
 
-**Verified**: `cargo build` succeeds, `cargo test` passes (12 tests), `cargo bench --no-run` succeeds.
+**Verified**: `cargo build` succeeds, `cargo test` passes (28 tests: 21 unit + 7 parity), `cargo bench --no-run` succeeds.
 
 **Next Steps for Phase 6**:
-1. Implement actual feature computation in `prepare_input()` (port from Python feature_builder.py)
-2. Add parity testing infrastructure (generate_vectors.py, test_parity.rs)
+1. Integrate features.rs functions into `prepare_input()` in predictor.rs
+2. Add OrderFlow and Options feature computation (currently only Price & Volatility implemented)
 3. Comprehensive latency benchmarks with real ONNX model
 4. Streaming data integration example
 
@@ -691,10 +708,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 ---
 
-*Document version: 2.6*
+*Document version: 2.7*
 *Last updated: 2026-01-29*
 
 **Changelog**:
+- v2.7: Phase 6 continued - implemented features.rs with price/volatility feature computation ported from Python (log returns, VWAP, realized volatility). Added parity testing infrastructure (generate_vectors.py, test_parity.rs) with 7 test cases validating no train/serve skew. 28 Rust tests passing (21 unit + 7 parity), all parity tests passing with <1e-8 tolerance.
 - v2.6: Phase 6 started - implemented Rust inference foundation with buffer.rs (RollingBuffer, FeatureBuffer), predictor.rs (PricePredictor, Horizon, Config, PredictionResult), and latency benchmarks. 12 tests passing, builds successfully. Feature computation placeholder in place.
 - v2.5: Phase 5 complete - implemented calibration.py with TemperatureScaler, PlattScaler, reliability diagrams, multi-horizon calibration analysis, and bucket-level calibration. 39 new tests, 100% type coverage, 604 tests total. All Phases 0-5 now complete.
 - v2.4: Phase 5 continued - implemented trainer.py with full training loop (Trainer class, CosineWarmupScheduler, checkpointing, early stopping, mixed precision). Fixed MultiHorizonLoss dict key handling. 29 new tests, 100% type coverage, 564 tests total.
