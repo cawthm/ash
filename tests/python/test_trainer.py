@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest  # type: ignore[import-not-found]
+import pytest
 import torch
 import torch.nn as nn
 from numpy.typing import NDArray

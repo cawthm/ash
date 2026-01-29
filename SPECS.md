@@ -565,7 +565,7 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 - `check_tolerance()` utility for tolerance checking
 - `format_validation_report()` for human-readable validation reports
 
-### Phase 5: Training Pipeline - IN PROGRESS
+### Phase 5: Training Pipeline - COMPLETE
 
 | File | Status | Type Coverage | Errors | Notes |
 |------|--------|---------------|--------|-------|
@@ -573,8 +573,10 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `tests/python/test_data_loader.py` | Complete | 100% | 0 | 62 tests passing |
 | `evaluation/metrics.py` | Complete | 100% | 0 | Probabilistic & trading metrics |
 | `tests/python/test_metrics.py` | Complete | 100% | 0 | 53 tests passing |
-| `models/training/trainer.py` | Not Started | - | - | Training loop |
-| `evaluation/calibration.py` | Not Started | - | - | Calibration analysis |
+| `models/training/trainer.py` | Complete | 100% | 0 | Training loop with warmup, early stopping, checkpointing |
+| `tests/python/test_trainer.py` | Complete | 100% | 0 | 29 tests passing |
+| `evaluation/calibration.py` | Complete | 100% | 0 | Temperature/Platt scaling, reliability diagrams, multi-horizon analysis |
+| `tests/python/test_calibration.py` | Complete | 100% | 0 | 39 tests passing |
 
 **Implemented**:
 - `SplitConfig` dataclass for temporal split configuration (train/val/test ratios, gap)
@@ -607,6 +609,38 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 - `HorizonMetrics` and `MultiHorizonMetrics` for per-horizon evaluation
 - `compute_horizon_metrics()` and `compute_multi_horizon_metrics()` for full evaluation
 - `format_metrics_report()` for human-readable metric reports
+- `TrainerConfig` dataclass for training configuration (LR, warmup, patience, FP16, etc.)
+- `TrainingState` dataclass for tracking training progress
+- `CosineWarmupScheduler` for LR scheduling with linear warmup + cosine decay
+- `CheckpointInfo` dataclass for checkpoint metadata
+- `Trainer` class with complete training loop:
+  - AdamW optimizer with configurable weight decay
+  - Learning rate warmup and cosine annealing
+  - Gradient clipping for training stability
+  - Early stopping based on validation loss
+  - Checkpoint saving/loading with state persistence
+  - Mixed precision training (FP16) support
+  - Automatic best model tracking
+  - Training history logging to JSON
+  - Multi-horizon metrics evaluation during validation
+- `create_trainer()` factory for trainer initialization from config dicts
+- `CalibrationConfig` dataclass for calibration method configuration (bins, LR, max_iter)
+- `TemperatureScaler` class for post-hoc temperature scaling calibration:
+  - `fit()` method to learn optimal temperature via LBFGS optimization
+  - `transform()` method to apply temperature scaling to logits
+  - `fit_transform()` convenience method for one-step calibration
+  - Validation split support for holdout calibration metrics
+- `PlattScaler` class for Platt scaling (logistic regression calibration):
+  - Multi-class adaptation via binary correctness targets
+  - LBFGS optimization for scale and bias parameters
+- `ReliabilityDiagram` dataclass for calibration curve data
+- `compute_reliability_diagram()` for calibration analysis (ECE, MCE, bin statistics)
+- `MultiHorizonCalibration` dataclass for cross-horizon calibration analysis
+- `compute_multi_horizon_calibration()` for analyzing calibration across all horizons
+- `format_calibration_report()` for human-readable calibration quality assessment
+- `BucketCalibration` dataclass for per-bucket calibration analysis
+- `compute_bucket_calibration()` for identifying poorly calibrated price buckets
+- `apply_temperature_scaling_multi_horizon()` for calibrating all horizons independently
 
 ### Phase 6: Rust Inference - NOT STARTED
 
@@ -615,15 +649,16 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 5: Complete training pipeline (trainer.py, calibration.py)
-3. Phase 6: Streaming integration and benchmarking
+2. Phase 6: Rust inference implementation (streaming integration and benchmarking)
 
 ---
 
-*Document version: 2.3*
-*Last updated: 2026-01-28*
+*Document version: 2.5*
+*Last updated: 2026-01-29*
 
 **Changelog**:
+- v2.5: Phase 5 complete - implemented calibration.py with TemperatureScaler, PlattScaler, reliability diagrams, multi-horizon calibration analysis, and bucket-level calibration. 39 new tests, 100% type coverage, 604 tests total. All Phases 0-5 now complete.
+- v2.4: Phase 5 continued - implemented trainer.py with full training loop (Trainer class, CosineWarmupScheduler, checkpointing, early stopping, mixed precision). Fixed MultiHorizonLoss dict key handling. 29 new tests, 100% type coverage, 564 tests total.
 - v2.3: Phase 5 started - implemented data_loader.py (temporal splits, PriceDataset, rolling windows) and metrics.py (NLL, Brier, ECE, directional accuracy, sharpness, P&L simulation). 115 new tests, 100% type coverage, 535 tests total.
 - v2.2: Phase 4 complete - implemented validate_export.py with ValidationConfig, ValidationResult, ExportValidator, and utility functions for PyTorch/ONNX parity testing (50 tests, 100% type coverage, 420 tests total).
 - v2.1: Phase 4 continued - implemented onnx_export.py with ONNXExporter, ONNX-exportable transformer components (attention, encoder layer, encoder), export utilities, and metadata support (32 tests, 100% type coverage, 370 tests total).
