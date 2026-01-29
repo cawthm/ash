@@ -401,12 +401,16 @@ class MultiHorizonLoss(nn.Module):
         """
         # Convert to list if dict
         if isinstance(logits, dict):
-            logits_list = [logits[i] for i in range(self.num_horizons)]
+            # Use sorted keys to get consistent ordering
+            sorted_keys = sorted(logits.keys())
+            logits_list = [logits[k] for k in sorted_keys]
         else:
             logits_list = list(logits)
 
         if isinstance(targets, dict):
-            targets_list = [targets[i] for i in range(self.num_horizons)]
+            # Use sorted keys to get consistent ordering
+            sorted_keys = sorted(targets.keys())
+            targets_list = [targets[k] for k in sorted_keys]
         else:
             targets_list = list(targets)
 
