@@ -17,6 +17,8 @@ from typing import Any
 import numpy as np
 
 from data.processors.feature_builder import (
+    OrderFlowFeatureBuilder,
+    OrderFlowFeatureConfig,
     PriceFeatureBuilder,
     PriceFeatureConfig,
     VolatilityFeatureBuilder,
@@ -191,6 +193,126 @@ def generate_test_vectors() -> dict[str, Any]:
             "expected": {
                 "features": _serialize_2d_array(features_realistic),
                 "feature_names": price_builder_full.get_feature_names(),
+            },
+        }
+    )
+
+    # Test Case 8: Order flow - trade direction inference
+    trade_prices = [100.0, 101.0, 100.5, 100.5, 101.5, 101.0]
+    trade_sizes = [10.0, 20.0, 15.0, 12.0, 18.0, 25.0]
+    trade_timestamps = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+
+    orderflow_builder = OrderFlowFeatureBuilder(
+        OrderFlowFeatureConfig(
+            imbalance_window=3,
+            include_size_distribution=True,
+            include_arrival_rate=True,
+            size_quantiles=(0.25, 0.5, 0.75),
+            arrival_rate_window=3,
+        )
+    )
+
+    directions = orderflow_builder.infer_trade_direction(np.array(trade_prices))
+    imbalance = orderflow_builder.compute_trade_imbalance(
+        directions, np.array(trade_sizes), window=3
+    )
+    size_quantiles = orderflow_builder.compute_size_quantiles(
+        np.array(trade_sizes), window=3
+    )
+    arrival_rate = orderflow_builder.compute_arrival_rate(
+        np.array(trade_timestamps), window=3
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "orderflow_basic",
+            "description": "Order flow features: direction, imbalance, size quantiles, arrival rate",
+            "inputs": {
+                "prices": trade_prices,
+                "sizes": trade_sizes,
+                "timestamps": trade_timestamps,
+                "imbalance_window": 3,
+                "quantiles": [0.25, 0.5, 0.75],
+                "arrival_rate_window": 3,
+            },
+            "expected": {
+                "directions": [int(d) for d in directions],
+                "imbalance": _serialize_array(imbalance),
+                "size_q25": _serialize_array(size_quantiles[:, 0]),
+                "size_q50": _serialize_array(size_quantiles[:, 1]),
+                "size_q75": _serialize_array(size_quantiles[:, 2]),
+                "arrival_rate": _serialize_array(arrival_rate),
+            },
+        }
+    )
+
+    # Test Case 9: Order flow - edge case with zero ticks
+    zero_tick_prices = [100.0, 100.0, 100.0, 101.0, 101.0, 99.0]
+    zero_tick_sizes = [5.0, 10.0, 8.0, 12.0, 6.0, 15.0]
+
+    directions_zero = orderflow_builder.infer_trade_direction(
+        np.array(zero_tick_prices)
+    )
+    imbalance_zero = orderflow_builder.compute_trade_imbalance(
+        directions_zero, np.array(zero_tick_sizes), window=4
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "orderflow_zero_ticks",
+            "description": "Order flow with zero ticks (direction propagation)",
+            "inputs": {
+                "prices": zero_tick_prices,
+                "sizes": zero_tick_sizes,
+                "window": 4,
+            },
+            "expected": {
+                "directions": [int(d) for d in directions_zero],
+                "imbalance": _serialize_array(imbalance_zero),
+            },
+        }
+    )
+
+    # Test Case 10: Order flow - realistic trading scenario
+    np.random.seed(789)
+    n_trades = 100
+    realistic_trade_prices = 150.0 + np.cumsum(
+        np.random.normal(0, 0.05, n_trades)
+    )  # Random walk
+    realistic_trade_sizes = np.random.lognormal(3.0, 0.5, n_trades)  # Log-normal sizes
+    realistic_timestamps = np.sort(
+        np.random.uniform(0, 60, n_trades)
+    )  # Random arrival times over 60s
+
+    orderflow_realistic = OrderFlowFeatureBuilder(
+        OrderFlowFeatureConfig(
+            imbalance_window=20,
+            include_size_distribution=True,
+            include_arrival_rate=True,
+            size_quantiles=(0.25, 0.5, 0.75),
+            arrival_rate_window=20,
+        )
+    )
+
+    features_orderflow = orderflow_realistic.compute_features(
+        realistic_trade_prices, realistic_trade_sizes, realistic_timestamps
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "orderflow_realistic",
+            "description": "Realistic order flow scenario with full feature set",
+            "inputs": {
+                "prices": _serialize_array(realistic_trade_prices),
+                "sizes": _serialize_array(realistic_trade_sizes),
+                "timestamps": _serialize_array(realistic_timestamps),
+                "imbalance_window": 20,
+                "quantiles": [0.25, 0.5, 0.75],
+                "arrival_rate_window": 20,
+            },
+            "expected": {
+                "features": _serialize_2d_array(features_orderflow),
+                "feature_names": orderflow_realistic.get_feature_names(),
             },
         }
     )

@@ -6,8 +6,9 @@
 //! **Critical**: Any mismatch indicates train/serve skew risk and must be fixed.
 
 use ash_inference::features::{
-    compute_log_returns, compute_realized_volatility, compute_vwap, compute_vwap_deviation,
-    PriceFeatureConfig,
+    compute_arrival_rate, compute_log_returns, compute_realized_volatility,
+    compute_size_quantiles, compute_trade_imbalance, compute_vwap, compute_vwap_deviation,
+    infer_trade_direction, PriceFeatureConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -337,4 +338,171 @@ fn test_parity_realistic_price_movement() {
         let context = format!("vwap_dev[t={}]", time_idx);
         assert_f64_eq(actual, expected, TOLERANCE, &context);
     }
+}
+
+#[test]
+fn test_parity_orderflow_basic() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "orderflow_basic")
+        .expect("Test case 'orderflow_basic' not found");
+
+    // Parse inputs
+    let prices = parse_array(&test_case.inputs["prices"]);
+    let sizes = parse_array(&test_case.inputs["sizes"]);
+    let timestamps = parse_array(&test_case.inputs["timestamps"]);
+    let imbalance_window = test_case.inputs["imbalance_window"].as_u64().unwrap() as usize;
+    let quantiles: Vec<f64> = test_case.inputs["quantiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let arrival_rate_window = test_case.inputs["arrival_rate_window"].as_u64().unwrap() as usize;
+
+    // Compute Rust outputs
+    let directions = infer_trade_direction(&prices);
+    let imbalance = compute_trade_imbalance(&directions, &sizes, imbalance_window).unwrap();
+    let size_quants = compute_size_quantiles(&sizes, imbalance_window, &quantiles).unwrap();
+    let arrival_rate = compute_arrival_rate(&timestamps, arrival_rate_window).unwrap();
+
+    // Parse expected outputs
+    let expected_directions: Vec<i8> = test_case.expected["directions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as i8)
+        .collect();
+    let expected_imbalance = parse_array(&test_case.expected["imbalance"]);
+    let expected_q25 = parse_array(&test_case.expected["size_q25"]);
+    let expected_q50 = parse_array(&test_case.expected["size_q50"]);
+    let expected_q75 = parse_array(&test_case.expected["size_q75"]);
+    let expected_arrival_rate = parse_array(&test_case.expected["arrival_rate"]);
+
+    // Validate directions
+    assert_eq!(
+        directions, expected_directions,
+        "Trade direction inference mismatch"
+    );
+
+    // Validate imbalance
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&imbalance, &expected_imbalance, TOLERANCE, "imbalance");
+
+    // Validate size quantiles
+    let q25: Vec<f64> = size_quants.iter().map(|row| row[0]).collect();
+    let q50: Vec<f64> = size_quants.iter().map(|row| row[1]).collect();
+    let q75: Vec<f64> = size_quants.iter().map(|row| row[2]).collect();
+    assert_arrays_eq(&q25, &expected_q25, TOLERANCE, "size_q25");
+    assert_arrays_eq(&q50, &expected_q50, TOLERANCE, "size_q50");
+    assert_arrays_eq(&q75, &expected_q75, TOLERANCE, "size_q75");
+
+    // Validate arrival rate
+    assert_arrays_eq(
+        &arrival_rate,
+        &expected_arrival_rate,
+        TOLERANCE,
+        "arrival_rate",
+    );
+}
+
+#[test]
+fn test_parity_orderflow_zero_ticks() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "orderflow_zero_ticks")
+        .expect("Test case 'orderflow_zero_ticks' not found");
+
+    // Parse inputs
+    let prices = parse_array(&test_case.inputs["prices"]);
+    let sizes = parse_array(&test_case.inputs["sizes"]);
+    let window = test_case.inputs["window"].as_u64().unwrap() as usize;
+
+    // Compute Rust outputs
+    let directions = infer_trade_direction(&prices);
+    let imbalance = compute_trade_imbalance(&directions, &sizes, window).unwrap();
+
+    // Parse expected outputs
+    let expected_directions: Vec<i8> = test_case.expected["directions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as i8)
+        .collect();
+    let expected_imbalance = parse_array(&test_case.expected["imbalance"]);
+
+    // Validate
+    assert_eq!(
+        directions, expected_directions,
+        "Trade direction with zero ticks mismatch"
+    );
+
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&imbalance, &expected_imbalance, TOLERANCE, "imbalance");
+}
+
+#[test]
+fn test_parity_orderflow_realistic() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "orderflow_realistic")
+        .expect("Test case 'orderflow_realistic' not found");
+
+    // Parse inputs
+    let prices = parse_array(&test_case.inputs["prices"]);
+    let sizes = parse_array(&test_case.inputs["sizes"]);
+    let timestamps = parse_array(&test_case.inputs["timestamps"]);
+    let imbalance_window = test_case.inputs["imbalance_window"].as_u64().unwrap() as usize;
+    let quantiles: Vec<f64> = test_case.inputs["quantiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let arrival_rate_window = test_case.inputs["arrival_rate_window"].as_u64().unwrap() as usize;
+
+    // Compute Rust outputs
+    let directions = infer_trade_direction(&prices);
+    let imbalance = compute_trade_imbalance(&directions, &sizes, imbalance_window).unwrap();
+    let size_quants = compute_size_quantiles(&sizes, imbalance_window, &quantiles).unwrap();
+    let arrival_rate = compute_arrival_rate(&timestamps, arrival_rate_window).unwrap();
+
+    // Parse expected outputs from features array
+    let expected_features = test_case.expected["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| parse_array(row))
+        .collect::<Vec<_>>();
+
+    // Expected features order: [imbalance, size_q25, size_q50, size_q75, arrival_rate]
+    let expected_imbalance: Vec<f64> = expected_features.iter().map(|row| row[0]).collect();
+    let expected_q25: Vec<f64> = expected_features.iter().map(|row| row[1]).collect();
+    let expected_q50: Vec<f64> = expected_features.iter().map(|row| row[2]).collect();
+    let expected_q75: Vec<f64> = expected_features.iter().map(|row| row[3]).collect();
+    let expected_arrival_rate: Vec<f64> = expected_features.iter().map(|row| row[4]).collect();
+
+    // Validate
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&imbalance, &expected_imbalance, TOLERANCE, "imbalance");
+
+    let q25: Vec<f64> = size_quants.iter().map(|row| row[0]).collect();
+    let q50: Vec<f64> = size_quants.iter().map(|row| row[1]).collect();
+    let q75: Vec<f64> = size_quants.iter().map(|row| row[2]).collect();
+    assert_arrays_eq(&q25, &expected_q25, TOLERANCE, "size_q25");
+    assert_arrays_eq(&q50, &expected_q50, TOLERANCE, "size_q50");
+    assert_arrays_eq(&q75, &expected_q75, TOLERANCE, "size_q75");
+
+    assert_arrays_eq(
+        &arrival_rate,
+        &expected_arrival_rate,
+        TOLERANCE,
+        "arrival_rate",
+    );
 }

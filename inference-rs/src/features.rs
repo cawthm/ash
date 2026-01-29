@@ -61,6 +61,37 @@ impl Default for VolatilityFeatureConfig {
     }
 }
 
+/// Configuration for order flow features.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderFlowFeatureConfig {
+    /// Window (in samples) for trade direction imbalance
+    pub imbalance_window: usize,
+
+    /// Whether to include trade size distribution features
+    pub include_size_distribution: bool,
+
+    /// Whether to include trade arrival rate
+    pub include_arrival_rate: bool,
+
+    /// Quantiles for trade size distribution (as fractions)
+    pub size_quantiles: Vec<f64>,
+
+    /// Window (in samples) for arrival rate calculation
+    pub arrival_rate_window: usize,
+}
+
+impl Default for OrderFlowFeatureConfig {
+    fn default() -> Self {
+        Self {
+            imbalance_window: 30,
+            include_size_distribution: true,
+            include_arrival_rate: true,
+            size_quantiles: vec![0.25, 0.5, 0.75],
+            arrival_rate_window: 60,
+        }
+    }
+}
+
 /// Compute log returns over a lookback window.
 ///
 /// Matches Python: `PriceFeatureBuilder.compute_log_returns()`
@@ -309,9 +340,278 @@ pub fn compute_rv_multi_window(
     Ok(result)
 }
 
+/// Infer trade direction using the tick rule.
+///
+/// Matches Python: `OrderFlowFeatureBuilder.infer_trade_direction()`
+///
+/// The tick rule classifies trades as:
+/// - Buy (+1): if price > previous price (uptick)
+/// - Sell (-1): if price < previous price (downtick)
+/// - Unknown (0): if price == previous price (zero tick)
+///
+/// For zero ticks, we propagate the last known direction.
+///
+/// # Arguments
+/// * `prices` - 1D array of trade prices
+///
+/// # Returns
+/// Array of trade directions: +1 (buy), -1 (sell), 0 (unknown)
+pub fn infer_trade_direction(prices: &[f64]) -> Vec<i8> {
+    let n = prices.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    let mut direction = vec![0i8; n];
+
+    if n > 1 {
+        // Compare each price to previous
+        for i in 1..n {
+            let diff = prices[i] - prices[i - 1];
+            direction[i] = if diff > 0.0 {
+                1
+            } else if diff < 0.0 {
+                -1
+            } else {
+                0
+            };
+        }
+
+        // Propagate last known direction for zero ticks
+        let mut last_dir: i8 = 0;
+        for i in 0..n {
+            if direction[i] != 0 {
+                last_dir = direction[i];
+            } else {
+                direction[i] = last_dir;
+            }
+        }
+    }
+
+    direction
+}
+
+/// Compute volume-weighted trade direction imbalance.
+///
+/// Matches Python: `OrderFlowFeatureBuilder.compute_trade_imbalance()`
+///
+/// Imbalance = (buy_volume - sell_volume) / total_volume
+///
+/// # Arguments
+/// * `directions` - Trade directions (+1 buy, -1 sell)
+/// * `sizes` - Trade sizes (volumes)
+/// * `window` - Rolling window size
+///
+/// # Returns
+/// Imbalance values in range [-1, 1]. NaN where window is invalid.
+pub fn compute_trade_imbalance(
+    directions: &[i8],
+    sizes: &[f64],
+    window: usize,
+) -> Result<Vec<f64>> {
+    if directions.len() != sizes.len() {
+        anyhow::bail!("directions and sizes must have same length");
+    }
+    if window < 1 {
+        anyhow::bail!("window must be at least 1");
+    }
+
+    let n = directions.len();
+    let mut result = vec![f64::NAN; n];
+
+    if window > n {
+        return Ok(result);
+    }
+
+    // Signed volume: positive for buys, negative for sells
+    let signed_volume: Vec<f64> = directions
+        .iter()
+        .zip(sizes.iter())
+        .map(|(&d, &s)| d as f64 * s)
+        .collect();
+
+    // Rolling sums using cumsum
+    let mut cumsum_signed = vec![0.0; n];
+    let mut cumsum_total = vec![0.0; n];
+
+    cumsum_signed[0] = signed_volume[0];
+    cumsum_total[0] = sizes[0].abs();
+    for i in 1..n {
+        cumsum_signed[i] = cumsum_signed[i - 1] + signed_volume[i];
+        cumsum_total[i] = cumsum_total[i - 1] + sizes[i].abs();
+    }
+
+    // First valid position
+    if cumsum_total[window - 1] > 0.0 {
+        result[window - 1] = cumsum_signed[window - 1] / cumsum_total[window - 1];
+    }
+
+    // Remaining positions
+    if window < n {
+        for i in window..n {
+            let rolling_signed = cumsum_signed[i] - cumsum_signed[i - window];
+            let rolling_total = cumsum_total[i] - cumsum_total[i - window];
+            if rolling_total > 0.0 {
+                result[i] = rolling_signed / rolling_total;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Compute rolling quantiles of trade sizes.
+///
+/// Matches Python: `OrderFlowFeatureBuilder.compute_size_quantiles()`
+///
+/// # Arguments
+/// * `sizes` - 1D array of trade sizes
+/// * `window` - Rolling window size
+/// * `quantiles` - Quantiles to compute (e.g., [0.25, 0.5, 0.75])
+///
+/// # Returns
+/// 2D array (time x quantiles) with quantile values. NaN where window is invalid.
+pub fn compute_size_quantiles(
+    sizes: &[f64],
+    window: usize,
+    quantiles: &[f64],
+) -> Result<Vec<Vec<f64>>> {
+    if window < 1 {
+        anyhow::bail!("window must be at least 1");
+    }
+
+    let n = sizes.len();
+    let num_quantiles = quantiles.len();
+    let mut result = vec![vec![f64::NAN; num_quantiles]; n];
+
+    if window > n {
+        return Ok(result);
+    }
+
+    // For each position, compute quantiles of the window
+    for i in (window - 1)..n {
+        let start_idx = i + 1 - window; // Avoid underflow: i >= window - 1, so i + 1 >= window
+        let mut window_data: Vec<f64> = sizes[start_idx..=i].to_vec();
+        window_data.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (j, &q) in quantiles.iter().enumerate() {
+            // Linear interpolation for quantile
+            let pos = q * (window_data.len() - 1) as f64;
+            let lower_idx = pos.floor() as usize;
+            let upper_idx = pos.ceil() as usize;
+            let frac = pos - lower_idx as f64;
+
+            if lower_idx == upper_idx {
+                result[i][j] = window_data[lower_idx];
+            } else {
+                result[i][j] =
+                    window_data[lower_idx] * (1.0 - frac) + window_data[upper_idx] * frac;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Compute trade arrival rate (trades per second).
+///
+/// Matches Python: `OrderFlowFeatureBuilder.compute_arrival_rate()`
+///
+/// # Arguments
+/// * `timestamps` - 1D array of trade timestamps (in seconds)
+/// * `window` - Number of trades to use for rate calculation
+///
+/// # Returns
+/// Arrival rate in trades per second. NaN where window is invalid.
+pub fn compute_arrival_rate(timestamps: &[f64], window: usize) -> Result<Vec<f64>> {
+    if window < 2 {
+        anyhow::bail!("window must be at least 2 for rate calculation");
+    }
+
+    let n = timestamps.len();
+    let mut result = vec![f64::NAN; n];
+
+    if window > n {
+        return Ok(result);
+    }
+
+    // Rate = (window - 1) trades / time_elapsed
+    for i in (window - 1)..n {
+        let start_idx = i + 1 - window; // Avoid underflow
+        let time_elapsed = timestamps[i] - timestamps[start_idx];
+        if time_elapsed > 0.0 {
+            result[i] = (window - 1) as f64 / time_elapsed;
+        }
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_infer_trade_direction_basic() {
+        let prices = vec![100.0, 101.0, 100.5, 100.5, 101.0];
+        let directions = infer_trade_direction(&prices);
+
+        assert_eq!(directions[0], 0); // First trade is unknown
+        assert_eq!(directions[1], 1); // Uptick
+        assert_eq!(directions[2], -1); // Downtick
+        assert_eq!(directions[3], -1); // Zero tick, propagate last direction
+        assert_eq!(directions[4], 1); // Uptick
+    }
+
+    #[test]
+    fn test_infer_trade_direction_empty() {
+        let prices: Vec<f64> = vec![];
+        let directions = infer_trade_direction(&prices);
+        assert_eq!(directions.len(), 0);
+    }
+
+    #[test]
+    fn test_compute_trade_imbalance_basic() {
+        let directions = vec![1i8, 1, -1, 1, -1];
+        let sizes = vec![10.0, 20.0, 15.0, 10.0, 5.0];
+        let imbalance = compute_trade_imbalance(&directions, &sizes, 3).unwrap();
+
+        assert!(imbalance[0].is_nan());
+        assert!(imbalance[1].is_nan());
+        // Window [1, 1, -1] with sizes [10, 20, 15]
+        // Signed: 10 + 20 - 15 = 15, Total: 45
+        let expected2 = 15.0 / 45.0;
+        assert!((imbalance[2] - expected2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compute_size_quantiles_basic() {
+        let sizes = vec![10.0, 20.0, 30.0, 40.0, 50.0];
+        let quantiles = vec![0.0, 0.5, 1.0];
+        let result = compute_size_quantiles(&sizes, 3, &quantiles).unwrap();
+
+        assert!(result[0][0].is_nan());
+        assert!(result[1][0].is_nan());
+        // Window [10, 20, 30]: min=10, median=20, max=30
+        assert!((result[2][0] - 10.0).abs() < 1e-10);
+        assert!((result[2][1] - 20.0).abs() < 1e-10);
+        assert!((result[2][2] - 30.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compute_arrival_rate_basic() {
+        let timestamps = vec![0.0, 1.0, 2.0, 3.0, 5.0];
+        let rate = compute_arrival_rate(&timestamps, 3).unwrap();
+
+        assert!(rate[0].is_nan());
+        assert!(rate[1].is_nan());
+        // Window [0.0, 1.0, 2.0]: 2 trades over 2 seconds = 1.0 trades/sec
+        assert!((rate[2] - 1.0).abs() < 1e-10);
+        // Window [1.0, 2.0, 3.0]: 2 trades over 2 seconds = 1.0 trades/sec
+        assert!((rate[3] - 1.0).abs() < 1e-10);
+        // Window [2.0, 3.0, 5.0]: 2 trades over 3 seconds = 0.666... trades/sec
+        assert!((rate[4] - (2.0 / 3.0)).abs() < 1e-10);
+    }
 
     #[test]
     fn test_compute_log_returns_basic() {
