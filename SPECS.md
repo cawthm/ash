@@ -565,7 +565,48 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 - `check_tolerance()` utility for tolerance checking
 - `format_validation_report()` for human-readable validation reports
 
-### Phase 5: Training Pipeline - NOT STARTED
+### Phase 5: Training Pipeline - IN PROGRESS
+
+| File | Status | Type Coverage | Errors | Notes |
+|------|--------|---------------|--------|-------|
+| `models/training/data_loader.py` | Complete | 100% | 0 | Temporal data loading |
+| `tests/python/test_data_loader.py` | Complete | 100% | 0 | 62 tests passing |
+| `evaluation/metrics.py` | Complete | 100% | 0 | Probabilistic & trading metrics |
+| `tests/python/test_metrics.py` | Complete | 100% | 0 | 53 tests passing |
+| `models/training/trainer.py` | Not Started | - | - | Training loop |
+| `evaluation/calibration.py` | Not Started | - | - | Calibration analysis |
+
+**Implemented**:
+- `SplitConfig` dataclass for temporal split configuration (train/val/test ratios, gap)
+- `SplitIndices` dataclass for split boundary indices
+- `DataLoaderConfig` dataclass for data loader configuration
+- `compute_split_indices()` for chronological train/val/test splits with gaps
+- `PriceDataset` class for multi-horizon price prediction with:
+  - Temporal sequence construction
+  - Per-horizon target extraction
+  - Valid index computation based on sequence length + max horizon
+- `TemporalSampler` for sequential (non-shuffled) sampling
+- `SequentialBatchSampler` for contiguous batch construction
+- `collate_price_data()` for batching multi-horizon data
+- `DataLoaderBundle` dataclass containing all loaders and split info
+- `create_data_loaders()` factory for complete data loading setup
+- `RollingWindowDataset` for rolling window cross-validation
+- `create_rolling_windows()` for generating rolling window datasets
+- `MetricsConfig` dataclass for metrics configuration
+- `log_likelihood()` and `negative_log_likelihood()` for NLL computation
+- `brier_score()` and `brier_score_per_bucket()` for Brier score
+- `CalibrationResult` dataclass for calibration analysis results
+- `compute_calibration()` for reliability diagram data and ECE/MCE
+- `expected_calibration_error()` shortcut for ECE
+- `predicted_mean_bps()` and `predicted_std_bps()` for distribution statistics
+- `directional_accuracy()` for sign prediction accuracy
+- `sharpness()` for prediction concentration
+- `entropy()` and `mean_entropy()` for uncertainty quantification
+- `PnLResult` dataclass for P&L simulation results
+- `simulate_pnl()` for directional trading simulation
+- `HorizonMetrics` and `MultiHorizonMetrics` for per-horizon evaluation
+- `compute_horizon_metrics()` and `compute_multi_horizon_metrics()` for full evaluation
+- `format_metrics_report()` for human-readable metric reports
 
 ### Phase 6: Rust Inference - NOT STARTED
 
@@ -574,15 +615,16 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 ## 11. Next Steps
 
 1. Phase 1 data exploration (requires MCP database access)
-2. Phase 5: Training pipeline
+2. Phase 5: Complete training pipeline (trainer.py, calibration.py)
 3. Phase 6: Streaming integration and benchmarking
 
 ---
 
-*Document version: 2.2*
+*Document version: 2.3*
 *Last updated: 2026-01-28*
 
 **Changelog**:
+- v2.3: Phase 5 started - implemented data_loader.py (temporal splits, PriceDataset, rolling windows) and metrics.py (NLL, Brier, ECE, directional accuracy, sharpness, P&L simulation). 115 new tests, 100% type coverage, 535 tests total.
 - v2.2: Phase 4 complete - implemented validate_export.py with ValidationConfig, ValidationResult, ExportValidator, and utility functions for PyTorch/ONNX parity testing (50 tests, 100% type coverage, 420 tests total).
 - v2.1: Phase 4 continued - implemented onnx_export.py with ONNXExporter, ONNX-exportable transformer components (attention, encoder layer, encoder), export utilities, and metadata support (32 tests, 100% type coverage, 370 tests total).
 - v2.0: Phase 4 continued - implemented price_transformer.py with PriceTransformer model, TransformerConfig, PositionalEncoding, FeatureEmbedding, MultiHorizonHead, and factory functions (59 tests, 100% type coverage, 338 tests total).
