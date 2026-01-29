@@ -4,6 +4,10 @@
 //! and generating probability distributions over future prices.
 
 use crate::buffer::FeatureBuffer;
+use crate::features::{
+    compute_log_returns, compute_returns_multi_window, compute_rv_multi_window,
+    compute_vwap_deviation, PriceFeatureConfig, VolatilityFeatureConfig,
+};
 use crate::Result;
 use ndarray::Array2;
 use ort::session::{builder::GraphOptimizationLevel, Session, SessionOutputs};
@@ -49,7 +53,7 @@ impl Horizon {
 /// Configuration for the price predictor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Number of input features
+    /// Number of input features (auto-computed from feature configs)
     pub num_features: usize,
 
     /// Sequence length (number of time steps)
@@ -66,17 +70,37 @@ pub struct Config {
 
     /// Enable graph optimization
     pub optimize_graph: bool,
+
+    /// Price feature configuration
+    pub price_features: PriceFeatureConfig,
+
+    /// Volatility feature configuration
+    pub volatility_features: VolatilityFeatureConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let price_features = PriceFeatureConfig::default();
+        let volatility_features = VolatilityFeatureConfig::default();
+
+        // Compute total feature count:
+        // - Multi-window returns: 7 windows
+        // - VWAP deviation: 1 feature
+        // - Multi-window RV: 3 windows
+        // Total: 7 + 1 + 3 = 11 features
+        let num_features = price_features.return_windows.len()
+            + if price_features.include_vwap { 1 } else { 0 }
+            + volatility_features.rv_windows.len();
+
         Self {
-            num_features: 10,        // Placeholder: match actual feature count
+            num_features,
             sequence_length: 300,     // 300 seconds at 1 Hz
             num_buckets: 101,         // -50 to +50 bps
             lookback_seconds: 300,    // 5 minutes
             frequency_hz: 1,          // 1 Hz sampling
             optimize_graph: true,
+            price_features,
+            volatility_features,
         }
     }
 }
@@ -231,31 +255,65 @@ impl PricePredictor {
 
     /// Prepare input tensor from feature buffer.
     ///
-    /// Placeholder implementation - will need to compute actual features
-    /// from price/volume data once feature computation is implemented.
+    /// Computes features using integrated feature computation from features.rs:
+    /// - Multi-window log returns
+    /// - VWAP deviation
+    /// - Multi-window realized volatility
     fn prepare_input(&self) -> Result<Array2<f32>> {
         let seq_len = self.config.sequence_length;
         let num_features = self.config.num_features;
 
-        // Get last sequence_length prices
+        // Get last sequence_length data points
         let all_prices: Vec<f64> = self.feature_buffer.prices.to_vec();
-        let start_idx = if all_prices.len() > seq_len {
-            all_prices.len() - seq_len
-        } else {
-            0
-        };
-        let prices: Vec<f64> = all_prices[start_idx..].to_vec();
+        let all_volumes: Vec<f64> = self.feature_buffer.volumes.to_vec();
 
-        // Placeholder: Create dummy features
-        // TODO: Replace with actual feature computation
+        let n = all_prices.len();
+        let start_idx = if n > seq_len { n - seq_len } else { 0 };
+
+        let prices: Vec<f64> = all_prices[start_idx..].to_vec();
+        let volumes: Vec<f64> = all_volumes[start_idx..].to_vec();
+
+        // Initialize feature matrix
         let mut features = Array2::<f32>::zeros((seq_len, num_features));
 
-        for (i, &price) in prices.iter().enumerate() {
-            // Simple placeholder: first feature is normalized price
-            features[[i, 0]] = price as f32;
+        // Track feature column index
+        let mut col = 0;
 
-            // Other features would be computed here
-            // (returns, VWAP, volatility, etc.)
+        // 1. Multi-window log returns
+        let returns_multi = compute_returns_multi_window(&prices, &self.config.price_features)?;
+        for window_returns in returns_multi.iter() {
+            for (i, &ret) in window_returns.iter().enumerate() {
+                if i < seq_len {
+                    features[[i, col]] = if ret.is_finite() { ret as f32 } else { 0.0 };
+                }
+            }
+            col += 1;
+        }
+
+        // 2. VWAP deviation (if enabled)
+        if self.config.price_features.include_vwap {
+            // Use 60-second VWAP window (configurable in future)
+            let vwap_window = 60;
+            let vwap_dev = compute_vwap_deviation(&prices, &volumes, vwap_window)?;
+            for (i, &dev) in vwap_dev.iter().enumerate() {
+                if i < seq_len {
+                    features[[i, col]] = if dev.is_finite() { dev as f32 } else { 0.0 };
+                }
+            }
+            col += 1;
+        }
+
+        // 3. Multi-window realized volatility
+        // First compute 1-second log returns for RV calculation
+        let log_returns = compute_log_returns(&prices, 1)?;
+        let rv_multi = compute_rv_multi_window(&log_returns, &self.config.volatility_features)?;
+        for window_rv in rv_multi.iter() {
+            for (i, &rv) in window_rv.iter().enumerate() {
+                if i < seq_len {
+                    features[[i, col]] = if rv.is_finite() { rv as f32 } else { 0.0 };
+                }
+            }
+            col += 1;
         }
 
         Ok(features)
@@ -321,6 +379,10 @@ mod tests {
         assert_eq!(config.num_buckets, 101);
         assert_eq!(config.lookback_seconds, 300);
         assert_eq!(config.sequence_length, 300);
+        // Verify num_features = 7 (returns) + 1 (vwap) + 3 (rv) = 11
+        assert_eq!(config.num_features, 11);
+        assert_eq!(config.price_features.return_windows.len(), 7);
+        assert_eq!(config.volatility_features.rv_windows.len(), 3);
     }
 
     #[test]

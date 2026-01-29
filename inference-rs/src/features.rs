@@ -7,9 +7,10 @@
 //! to avoid train/serve skew. See tests/feature_parity for validation tests.
 
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for price history features.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceFeatureConfig {
     /// Lookback windows (in seconds) for computing log returns
     pub return_windows: Vec<u32>,
@@ -32,7 +33,7 @@ impl Default for PriceFeatureConfig {
 }
 
 /// Configuration for volatility features.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VolatilityFeatureConfig {
     /// Windows (in seconds) for realized volatility calculation
     pub rv_windows: Vec<u32>,

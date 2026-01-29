@@ -649,8 +649,8 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `inference-rs/Cargo.toml` | Complete | N/A | 0 | Dependencies configured (ort, ndarray, serde) |
 | `inference-rs/src/lib.rs` | Complete | N/A | 0 | Module exports |
 | `inference-rs/src/buffer.rs` | Complete | 7 passing | 0 | RollingBuffer and FeatureBuffer |
-| `inference-rs/src/features.rs` | Complete | 14 passing | 0 | Price & volatility feature computation (ported from Python) |
-| `inference-rs/src/predictor.rs` | Complete | 5 passing | 0 | PricePredictor with ONNX inference |
+| `inference-rs/src/features.rs` | Complete | 14 passing | 0 | Price & volatility feature computation with Serialize/Deserialize |
+| `inference-rs/src/predictor.rs` | Complete | 5 passing | 0 | PricePredictor with integrated feature computation |
 | `inference-rs/benches/latency.rs` | Complete | N/A | 0 | Basic buffer benchmarks |
 | `tests/feature_parity/generate_vectors.py` | Complete | N/A | 0 | Python test vector generator (7 test cases) |
 | `inference-rs/tests/test_parity.rs` | Complete | 7 passing | 0 | Python↔Rust parity validation |
@@ -689,12 +689,20 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `update()` ingests tick data into buffers
   - `predict()` runs ONNX inference and returns distributions
   - `clear()` resets state (for market gaps)
-  - Placeholder feature computation (TODO: integrate features.rs functions)
+  - **Integrated feature computation** in `prepare_input()`:
+    - Multi-window log returns (7 windows)
+    - VWAP deviation (60s window)
+    - Multi-window realized volatility (3 windows)
+    - Total: 11 features per time step
+- `Config` struct with auto-computed feature count:
+  - Includes `PriceFeatureConfig` and `VolatilityFeatureConfig`
+  - `num_features` computed from feature configurations (11 by default)
+  - Serializable/deserializable for model deployment
 
-**Verified**: `cargo build` succeeds, `cargo test` passes (28 tests: 21 unit + 7 parity), `cargo bench --no-run` succeeds.
+**Verified**: `cargo build --release` succeeds, `cargo test` passes (28 tests: 21 unit + 7 parity), all tests passing.
 
 **Next Steps for Phase 6**:
-1. Integrate features.rs functions into `prepare_input()` in predictor.rs
+1. ~~Integrate features.rs functions into `prepare_input()` in predictor.rs~~ ✅ COMPLETE
 2. Add OrderFlow and Options feature computation (currently only Price & Volatility implemented)
 3. Comprehensive latency benchmarks with real ONNX model
 4. Streaming data integration example
@@ -708,10 +716,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 ---
 
-*Document version: 2.7*
+*Document version: 2.8*
 *Last updated: 2026-01-29*
 
 **Changelog**:
+- v2.8: Phase 6 continued - integrated features.rs into predictor.rs prepare_input(). Updated Config struct to include PriceFeatureConfig and VolatilityFeatureConfig with auto-computed num_features (11 total). Added Serialize/Deserialize derives to feature configs for model deployment. prepare_input() now computes actual features: multi-window returns (7), VWAP deviation (1), multi-window RV (3). All 28 tests passing, cargo build --release succeeds.
 - v2.7: Phase 6 continued - implemented features.rs with price/volatility feature computation ported from Python (log returns, VWAP, realized volatility). Added parity testing infrastructure (generate_vectors.py, test_parity.rs) with 7 test cases validating no train/serve skew. 28 Rust tests passing (21 unit + 7 parity), all parity tests passing with <1e-8 tolerance.
 - v2.6: Phase 6 started - implemented Rust inference foundation with buffer.rs (RollingBuffer, FeatureBuffer), predictor.rs (PricePredictor, Horizon, Config, PredictionResult), and latency benchmarks. 12 tests passing, builds successfully. Feature computation placeholder in place.
 - v2.5: Phase 5 complete - implemented calibration.py with TemperatureScaler, PlattScaler, reliability diagrams, multi-horizon calibration analysis, and bucket-level calibration. 39 new tests, 100% type coverage, 604 tests total. All Phases 0-5 now complete.
