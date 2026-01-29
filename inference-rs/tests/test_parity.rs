@@ -6,9 +6,11 @@
 //! **Critical**: Any mismatch indicates train/serve skew risk and must be fixed.
 
 use ash_inference::features::{
-    compute_arrival_rate, compute_log_returns, compute_realized_volatility,
-    compute_size_quantiles, compute_trade_imbalance, compute_vwap, compute_vwap_deviation,
-    infer_trade_direction, PriceFeatureConfig,
+    compute_aggregated_greeks, compute_arrival_rate, compute_atm_iv_by_expiry,
+    compute_days_to_expiry, compute_iv_surface_features, compute_log_returns, compute_moneyness,
+    compute_put_call_ratios, compute_realized_volatility, compute_size_quantiles,
+    compute_term_structure_slope, compute_trade_imbalance, compute_vwap, compute_vwap_deviation,
+    infer_trade_direction, OptionsFeatureConfig, PriceFeatureConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -505,4 +507,213 @@ fn test_parity_orderflow_realistic() {
         TOLERANCE,
         "arrival_rate",
     );
+}
+
+#[test]
+fn test_parity_options_moneyness_dte() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_moneyness_dte")
+        .expect("Test case 'options_moneyness_dte' not found");
+
+    // Parse inputs
+    let strikes = parse_array(&test_case.inputs["strikes"]);
+    let spot_price = test_case.inputs["spot_price"].as_f64().unwrap();
+    let expirations = parse_array(&test_case.inputs["expirations"]);
+    let current_time = test_case.inputs["current_time"].as_f64().unwrap();
+
+    // Compute Rust outputs
+    let moneyness = compute_moneyness(&strikes, spot_price).unwrap();
+    let dte = compute_days_to_expiry(&expirations, current_time);
+
+    // Parse expected outputs
+    let expected_moneyness = parse_array(&test_case.expected["moneyness"]);
+    let expected_dte = parse_array(&test_case.expected["days_to_expiry"]);
+
+    // Validate
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&moneyness, &expected_moneyness, TOLERANCE, "moneyness");
+    assert_arrays_eq(&dte, &expected_dte, TOLERANCE, "days_to_expiry");
+}
+
+#[test]
+fn test_parity_options_greeks() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_greeks")
+        .expect("Test case 'options_greeks' not found");
+
+    // Parse inputs
+    let deltas = parse_array(&test_case.inputs["deltas"]);
+    let gammas = parse_array(&test_case.inputs["gammas"]);
+    let vegas = parse_array(&test_case.inputs["vegas"]);
+    let thetas = parse_array(&test_case.inputs["thetas"]);
+    let open_interests = parse_array(&test_case.inputs["open_interests"]);
+    let option_types: Vec<i8> = test_case.inputs["option_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as i8)
+        .collect();
+
+    // Compute Rust output
+    let greeks =
+        compute_aggregated_greeks(&deltas, &gammas, &vegas, &thetas, &open_interests, &option_types)
+            .unwrap();
+
+    // Parse expected output
+    let expected_greeks = parse_array(&test_case.expected["greeks"]);
+
+    // Validate
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&greeks, &expected_greeks, TOLERANCE, "aggregated_greeks");
+}
+
+#[test]
+fn test_parity_options_put_call_ratios() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_put_call_ratios")
+        .expect("Test case 'options_put_call_ratios' not found");
+
+    // Parse inputs
+    let option_types: Vec<i8> = test_case.inputs["option_types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as i8)
+        .collect();
+    let volumes = parse_array(&test_case.inputs["volumes"]);
+    let open_interests = parse_array(&test_case.inputs["open_interests"]);
+
+    // Compute Rust output
+    let ratios = compute_put_call_ratios(&option_types, &volumes, &open_interests).unwrap();
+
+    // Parse expected output
+    let expected_ratios = parse_array(&test_case.expected["ratios"]);
+
+    // Validate
+    const TOLERANCE: f64 = 1e-10;
+    assert_arrays_eq(&ratios, &expected_ratios, TOLERANCE, "put_call_ratios");
+}
+
+#[test]
+fn test_parity_options_term_structure() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_term_structure")
+        .expect("Test case 'options_term_structure' not found");
+
+    // Parse inputs
+    let atm_ivs = parse_array(&test_case.inputs["atm_ivs_by_expiry"]);
+    let expiry_days: Vec<u32> = test_case.inputs["expiry_buckets_days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+
+    // Compute Rust output
+    let slope = compute_term_structure_slope(&atm_ivs, &expiry_days);
+
+    // Parse expected output
+    let expected_slope = test_case.expected["slope"].as_f64().unwrap();
+
+    // Validate
+    const TOLERANCE: f64 = 1e-10;
+    assert_f64_eq(slope, expected_slope, TOLERANCE, "term_structure_slope");
+}
+
+#[test]
+fn test_parity_options_atm_iv_by_expiry() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_atm_iv_by_expiry")
+        .expect("Test case 'options_atm_iv_by_expiry' not found");
+
+    // Parse inputs
+    let strikes = parse_array(&test_case.inputs["strikes"]);
+    let expirations = parse_array(&test_case.inputs["expirations"]);
+    let ivs = parse_array(&test_case.inputs["ivs"]);
+    let spot_price = test_case.inputs["spot_price"].as_f64().unwrap();
+    let current_time = test_case.inputs["current_time"].as_f64().unwrap();
+    let expiry_days: Vec<u32> = test_case.inputs["expiry_buckets_days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+
+    // Compute Rust output
+    let atm_ivs =
+        compute_atm_iv_by_expiry(&strikes, &expirations, &ivs, spot_price, current_time, &expiry_days)
+            .unwrap();
+
+    // Parse expected output
+    let expected_atm_ivs = parse_array(&test_case.expected["atm_ivs"]);
+
+    // Validate - slightly higher tolerance due to weighted averaging
+    const TOLERANCE: f64 = 1e-8;
+    assert_arrays_eq(&atm_ivs, &expected_atm_ivs, TOLERANCE, "atm_ivs_by_expiry");
+}
+
+#[test]
+fn test_parity_options_iv_surface() {
+    let vectors = load_test_vectors();
+    let test_case = vectors
+        .test_cases
+        .iter()
+        .find(|tc| tc.name == "options_iv_surface")
+        .expect("Test case 'options_iv_surface' not found");
+
+    // Parse inputs
+    let strikes = parse_array(&test_case.inputs["strikes"]);
+    let expirations = parse_array(&test_case.inputs["expirations"]);
+    let ivs = parse_array(&test_case.inputs["ivs"]);
+    let spot_price = test_case.inputs["spot_price"].as_f64().unwrap();
+    let current_time = test_case.inputs["current_time"].as_f64().unwrap();
+    let moneyness_buckets: Vec<f64> = test_case.inputs["moneyness_buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let expiry_days: Vec<u32> = test_case.inputs["expiry_buckets_days"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+
+    // Create config
+    let config = OptionsFeatureConfig {
+        include_iv_surface: true,
+        include_greeks: false,
+        include_put_call_ratio: false,
+        include_term_structure: false,
+        iv_moneyness_buckets: moneyness_buckets,
+        expiry_buckets_days: expiry_days,
+    };
+
+    // Compute Rust output
+    let iv_surface =
+        compute_iv_surface_features(&strikes, &expirations, &ivs, spot_price, current_time, &config)
+            .unwrap();
+
+    // Parse expected output
+    let expected_surface = parse_array(&test_case.expected["iv_surface"]);
+
+    // Validate - slightly higher tolerance due to weighted averaging
+    const TOLERANCE: f64 = 1e-8;
+    assert_arrays_eq(&iv_surface, &expected_surface, TOLERANCE, "iv_surface");
 }

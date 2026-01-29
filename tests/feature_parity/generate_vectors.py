@@ -19,6 +19,8 @@ import numpy as np
 from data.processors.feature_builder import (
     OrderFlowFeatureBuilder,
     OrderFlowFeatureConfig,
+    OptionsFeatureBuilder,
+    OptionsFeatureConfig,
     PriceFeatureBuilder,
     PriceFeatureConfig,
     VolatilityFeatureBuilder,
@@ -314,6 +316,163 @@ def generate_test_vectors() -> dict[str, Any]:
                 "features": _serialize_2d_array(features_orderflow),
                 "feature_names": orderflow_realistic.get_feature_names(),
             },
+        }
+    )
+
+    # Test Case 11: Options - basic moneyness and days to expiry
+    spot_price = 100.0
+    current_time = 0.0
+    strikes = np.array([95.0, 100.0, 105.0])
+    expirations = np.array([
+        7.0 * 24 * 3600,  # 7 days
+        30.0 * 24 * 3600,  # 30 days
+        60.0 * 24 * 3600,  # 60 days
+    ])
+
+    options_builder = OptionsFeatureBuilder()
+
+    moneyness = options_builder.compute_moneyness(strikes, spot_price)
+    dte = options_builder.compute_days_to_expiry(expirations, current_time)
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_moneyness_dte",
+            "description": "Options moneyness and days to expiry calculation",
+            "inputs": {
+                "strikes": strikes.tolist(),
+                "spot_price": spot_price,
+                "expirations": expirations.tolist(),
+                "current_time": current_time,
+            },
+            "expected": {
+                "moneyness": _serialize_array(moneyness),
+                "days_to_expiry": _serialize_array(dte),
+            },
+        }
+    )
+
+    # Test Case 12: Options - aggregated Greeks
+    deltas = np.array([0.5, -0.3, 0.6])
+    gammas = np.array([0.01, 0.02, 0.015])
+    vegas = np.array([10.0, 12.0, 11.0])
+    thetas = np.array([-0.5, -0.6, -0.4])
+    open_interests = np.array([100.0, 200.0, 100.0])
+    option_types = np.array([1, -1, 1], dtype=np.int8)
+
+    greeks = options_builder.compute_aggregated_greeks(
+        deltas, gammas, vegas, thetas, open_interests, option_types
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_greeks",
+            "description": "Aggregated Greeks weighted by open interest",
+            "inputs": {
+                "deltas": deltas.tolist(),
+                "gammas": gammas.tolist(),
+                "vegas": vegas.tolist(),
+                "thetas": thetas.tolist(),
+                "open_interests": open_interests.tolist(),
+                "option_types": option_types.tolist(),
+            },
+            "expected": {"greeks": _serialize_array(greeks)},
+        }
+    )
+
+    # Test Case 13: Options - put/call ratios
+    option_types_pc = np.array([1, 1, -1, -1, 1], dtype=np.int8)  # 3 calls, 2 puts
+    volumes_pc = np.array([100.0, 150.0, 200.0, 100.0, 50.0])
+    ois_pc = np.array([500.0, 500.0, 600.0, 400.0, 100.0])
+
+    ratios = options_builder.compute_put_call_ratios(option_types_pc, volumes_pc, ois_pc)
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_put_call_ratios",
+            "description": "Put/call volume and OI ratios",
+            "inputs": {
+                "option_types": option_types_pc.tolist(),
+                "volumes": volumes_pc.tolist(),
+                "open_interests": ois_pc.tolist(),
+            },
+            "expected": {"ratios": _serialize_array(ratios)},
+        }
+    )
+
+    # Test Case 14: Options - term structure slope
+    atm_ivs = np.array([0.20, 0.22, 0.24, 0.26])
+    slope = options_builder.compute_term_structure_slope(atm_ivs)
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_term_structure",
+            "description": "IV term structure slope via linear regression",
+            "inputs": {
+                "atm_ivs_by_expiry": atm_ivs.tolist(),
+                "expiry_buckets_days": list(
+                    options_builder.config.expiry_buckets_days
+                ),
+            },
+            "expected": {"slope": float(slope)},
+        }
+    )
+
+    # Test Case 15: Options - ATM IV by expiry
+    # Create realistic options chain
+    np.random.seed(999)
+    n_options = 50
+    strikes_chain = np.random.uniform(90, 110, n_options)
+    expirations_chain = np.array(
+        [
+            np.random.choice([7, 14, 30, 45, 60, 90]) * 24 * 3600.0
+            for _ in range(n_options)
+        ]
+    )
+    ivs_chain = np.random.uniform(0.15, 0.35, n_options)
+
+    atm_ivs_by_expiry = options_builder.compute_atm_iv_by_expiry(
+        strikes_chain, expirations_chain, ivs_chain, spot_price=100.0, current_time=0.0
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_atm_iv_by_expiry",
+            "description": "ATM implied volatility across expiry buckets",
+            "inputs": {
+                "strikes": _serialize_array(strikes_chain),
+                "expirations": _serialize_array(expirations_chain),
+                "ivs": _serialize_array(ivs_chain),
+                "spot_price": 100.0,
+                "current_time": 0.0,
+                "expiry_buckets_days": list(
+                    options_builder.config.expiry_buckets_days
+                ),
+            },
+            "expected": {"atm_ivs": _serialize_array(atm_ivs_by_expiry)},
+        }
+    )
+
+    # Test Case 16: Options - IV surface features
+    iv_surface = options_builder.compute_iv_surface_features(
+        strikes_chain, expirations_chain, ivs_chain, spot_price=100.0, current_time=0.0
+    )
+
+    test_vectors["test_cases"].append(
+        {
+            "name": "options_iv_surface",
+            "description": "IV surface features across moneyness and expiry grid",
+            "inputs": {
+                "strikes": _serialize_array(strikes_chain),
+                "expirations": _serialize_array(expirations_chain),
+                "ivs": _serialize_array(ivs_chain),
+                "spot_price": 100.0,
+                "current_time": 0.0,
+                "moneyness_buckets": list(options_builder.config.iv_moneyness_buckets),
+                "expiry_buckets_days": list(
+                    options_builder.config.expiry_buckets_days
+                ),
+            },
+            "expected": {"iv_surface": _serialize_array(iv_surface)},
         }
     )
 
