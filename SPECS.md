@@ -649,11 +649,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 | `inference-rs/Cargo.toml` | Complete | N/A | 0 | Dependencies configured (ort, ndarray, serde) |
 | `inference-rs/src/lib.rs` | Complete | N/A | 0 | Module exports |
 | `inference-rs/src/buffer.rs` | Complete | 7 passing | 0 | RollingBuffer and FeatureBuffer |
-| `inference-rs/src/features.rs` | Complete | 14 passing | 0 | Price & volatility feature computation with Serialize/Deserialize |
+| `inference-rs/src/features.rs` | Complete | 31 passing | 0 | Price, volatility & OrderFlow feature computation |
 | `inference-rs/src/predictor.rs` | Complete | 5 passing | 0 | PricePredictor with integrated feature computation |
 | `inference-rs/benches/latency.rs` | Complete | N/A | 0 | Basic buffer benchmarks |
-| `tests/feature_parity/generate_vectors.py` | Complete | N/A | 0 | Python test vector generator (7 test cases) |
-| `inference-rs/tests/test_parity.rs` | Complete | 7 passing | 0 | Python↔Rust parity validation |
+| `tests/feature_parity/generate_vectors.py` | Complete | N/A | 0 | Python test vector generator (10 test cases) |
+| `inference-rs/tests/test_parity.rs` | Complete | 10 passing | 0 | Python↔Rust parity validation |
 
 **Implemented**:
 - `RollingBuffer<T>` generic circular buffer:
@@ -666,7 +666,7 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - Configurable lookback window and frequency
   - `update()` for ingesting new tick data
   - `has_sufficient_data()` check for inference readiness
-- **Feature computation (Rust port from Python)**:
+- **Price & Volatility features (Rust port from Python)**:
   - `PriceFeatureConfig` and `VolatilityFeatureConfig` for configuration
   - `compute_log_returns()` - log returns with configurable lookback window
   - `compute_returns_multi_window()` - returns at multiple windows
@@ -675,11 +675,18 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `compute_realized_volatility()` - annualized RV using rolling standard deviation
   - `compute_rv_multi_window()` - RV at multiple windows
   - Edge case handling: zero/negative prices, insufficient data
+- **OrderFlow features (Rust port from Python)**:
+  - `OrderFlowFeatureConfig` for configuration
+  - `infer_trade_direction()` - tick rule with zero-tick propagation
+  - `compute_trade_imbalance()` - volume-weighted buy/sell pressure
+  - `compute_size_quantiles()` - rolling trade size distribution
+  - `compute_arrival_rate()` - trades per second calculation
+  - All features match Python within 1e-10 tolerance
 - **Parity testing infrastructure**:
-  - Python test vector generator with 7 test cases (basic returns, VWAP, RV, edge cases, realistic data)
+  - Python test vector generator with 10 test cases (price/vol/orderflow + edge cases)
   - Rust parity tests with NaN-aware equality checking
-  - Floating-point tolerance validation (1e-10 for returns/VWAP, 1e-8 for volatility)
-  - All parity tests passing (validates no train/serve skew)
+  - Floating-point tolerance validation (1e-10 for returns/VWAP/orderflow, 1e-8 for volatility)
+  - All 10 parity tests passing (validates no train/serve skew)
 - `Horizon` enum for prediction time horizons (1s to 600s)
 - `Config` struct for predictor configuration
 - `PredictionResult` with probability distributions per horizon:
@@ -699,13 +706,14 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
   - `num_features` computed from feature configurations (11 by default)
   - Serializable/deserializable for model deployment
 
-**Verified**: `cargo build --release` succeeds, `cargo test` passes (28 tests: 21 unit + 7 parity), all tests passing.
+**Verified**: `cargo build --release` succeeds, `cargo test` passes (41 tests: 31 unit + 10 parity), all tests passing.
 
 **Next Steps for Phase 6**:
 1. ~~Integrate features.rs functions into `prepare_input()` in predictor.rs~~ ✅ COMPLETE
-2. Add OrderFlow and Options feature computation (currently only Price & Volatility implemented)
-3. Comprehensive latency benchmarks with real ONNX model
-4. Streaming data integration example
+2. ~~Add OrderFlow feature computation~~ ✅ COMPLETE
+3. Add Options feature computation (IV surface, Greeks, put/call ratios, term structure)
+4. Comprehensive latency benchmarks with real ONNX model
+5. Streaming data integration example
 
 ---
 
@@ -716,10 +724,11 @@ Requires MCP database connectivity to query `options_data` and `stock_trades` ta
 
 ---
 
-*Document version: 2.8*
+*Document version: 2.9*
 *Last updated: 2026-01-29*
 
 **Changelog**:
+- v2.9: Phase 6 continued - added OrderFlow feature computation to Rust (infer_trade_direction, compute_trade_imbalance, compute_size_quantiles, compute_arrival_rate). Added OrderFlowFeatureConfig. Generated 3 new Python test vectors (orderflow_basic, orderflow_zero_ticks, orderflow_realistic). Added 3 parity tests validating Python/Rust equivalence. All 41 tests passing (31 unit + 10 parity), all parity tests passing with <1e-10 tolerance. No train/serve skew for OrderFlow features.
 - v2.8: Phase 6 continued - integrated features.rs into predictor.rs prepare_input(). Updated Config struct to include PriceFeatureConfig and VolatilityFeatureConfig with auto-computed num_features (11 total). Added Serialize/Deserialize derives to feature configs for model deployment. prepare_input() now computes actual features: multi-window returns (7), VWAP deviation (1), multi-window RV (3). All 28 tests passing, cargo build --release succeeds.
 - v2.7: Phase 6 continued - implemented features.rs with price/volatility feature computation ported from Python (log returns, VWAP, realized volatility). Added parity testing infrastructure (generate_vectors.py, test_parity.rs) with 7 test cases validating no train/serve skew. 28 Rust tests passing (21 unit + 7 parity), all parity tests passing with <1e-8 tolerance.
 - v2.6: Phase 6 started - implemented Rust inference foundation with buffer.rs (RollingBuffer, FeatureBuffer), predictor.rs (PricePredictor, Horizon, Config, PredictionResult), and latency benchmarks. 12 tests passing, builds successfully. Feature computation placeholder in place.
