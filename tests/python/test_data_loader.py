@@ -5,7 +5,6 @@ import pytest
 import torch
 
 from models.training.data_loader import (
-    DataLoaderBundle,
     DataLoaderConfig,
     PriceDataset,
     RollingWindowDataset,

@@ -17,10 +17,9 @@ from typing import Any
 import numpy as np
 
 from data.processors.feature_builder import (
+    OptionsFeatureBuilder,
     OrderFlowFeatureBuilder,
     OrderFlowFeatureConfig,
-    OptionsFeatureBuilder,
-    OptionsFeatureConfig,
     PriceFeatureBuilder,
     PriceFeatureConfig,
     VolatilityFeatureBuilder,
@@ -42,7 +41,6 @@ def generate_test_vectors() -> dict[str, Any]:
 
     # Test Case 1: Basic log returns
     prices_1 = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
-    volumes_1 = [1000.0, 1100.0, 1200.0, 1000.0, 900.0, 1050.0]
 
     price_builder = PriceFeatureBuilder(
         PriceFeatureConfig(

@@ -34,7 +34,7 @@ import torch.optim as optim
 from numpy.typing import NDArray
 from torch import Tensor
 
-from evaluation.metrics import CalibrationResult, compute_calibration
+from evaluation.metrics import compute_calibration
 
 
 @dataclass(frozen=True)
@@ -483,10 +483,10 @@ def format_calibration_report(
     lines.append("=" * 60)
     lines.append("")
     lines.append("Calibration Quality:")
-    lines.append(f"  ECE < 0.05: Excellent calibration")
-    lines.append(f"  ECE < 0.10: Good calibration")
-    lines.append(f"  ECE < 0.15: Fair calibration")
-    lines.append(f"  ECE > 0.15: Poor calibration (consider recalibration)")
+    lines.append("  ECE < 0.05: Excellent calibration")
+    lines.append("  ECE < 0.10: Good calibration")
+    lines.append("  ECE < 0.15: Fair calibration")
+    lines.append("  ECE > 0.15: Poor calibration (consider recalibration)")
     lines.append("")
 
     if calibration.mean_ece < 0.05:

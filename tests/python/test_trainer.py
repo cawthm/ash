@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -32,7 +31,6 @@ from models.training.trainer import (
     TrainingState,
     create_trainer,
 )
-
 
 # Fixtures
 
@@ -619,8 +617,6 @@ def test_trainer_early_stopping(
     )
 
     # Mock validate to return constant loss (no improvement)
-    original_validate = trainer.validate
-
     def mock_validate() -> tuple[float, None]:
         return (1.0, None)
 
@@ -768,7 +764,7 @@ def test_trainer_checkpoint_directory_creation(
     checkpoint_dir = tmp_path / "nested" / "dir" / "checkpoints"
     config = TrainerConfig(checkpoint_dir=str(checkpoint_dir))
 
-    trainer = Trainer(
+    _trainer = Trainer(
         simple_model, loss_fn, train_loader, config=config, device=device
     )
 
