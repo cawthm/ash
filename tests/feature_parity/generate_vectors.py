@@ -34,7 +34,7 @@ def generate_test_vectors() -> dict[str, Any]:
     Returns:
         Dictionary containing test cases with inputs and expected outputs.
     """
-    test_vectors = {
+    test_vectors: dict[str, Any] = {
         "version": "1.0",
         "description": "Test vectors for Python/Rust feature parity validation",
         "test_cases": [],
@@ -479,12 +479,13 @@ def generate_test_vectors() -> dict[str, Any]:
     return test_vectors
 
 
-def _serialize_array(arr: np.ndarray) -> list[float | None]:
+def _serialize_array(arr: np.ndarray) -> list[float | None | str]:
     """Serialize NumPy array to JSON-compatible list.
 
     NaN values are converted to None for JSON compatibility.
+    Infinity values are converted to "inf" or "-inf" strings.
     """
-    result = []
+    result: list[float | None | str] = []
     for val in arr.flat:
         if np.isnan(val):
             result.append(None)
@@ -495,7 +496,7 @@ def _serialize_array(arr: np.ndarray) -> list[float | None]:
     return result
 
 
-def _serialize_2d_array(arr: np.ndarray) -> list[list[float | None]]:
+def _serialize_2d_array(arr: np.ndarray) -> list[list[float | None | str]]:
     """Serialize 2D NumPy array to JSON-compatible nested list."""
     return [_serialize_array(row) for row in arr]
 
