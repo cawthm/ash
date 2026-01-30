@@ -3,7 +3,9 @@
 0a. Study @SPECS.md thoroughly
 0b. Study @implementation_plan.md carefully
 0c. Because the Phases in @implementation_plan.md are sequential, it's important to do them in order
-0d. Think about the most important thing to implement from @implementation_plan and how to break it down into tasks
+0d. Some phases (esp phase 1) may require connection to the local TimeScale database, the credentials for which can be found in ./.env
+    0di. Any step that requires MCP access to the database can instead be re-interpreted to simply connect to the db directly, using the credentials in this .env file
+    0dii. Any existing code that relies on MCP should be refactored to simply directly query the db
 0e. Pick one task to implement. Execute a handoff when the task is done: update SPECS.md and stop the session
 0f. A file is finished when i) it has total type coverage, ii) there are zero errors and warnings, and iii) QA is done.
 0g. Don't start new files if there are unfinished files.
