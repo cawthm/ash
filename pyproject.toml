@@ -71,6 +71,7 @@ module = [
     "torch.*",
     "onnx.*",
     "onnxruntime.*",
+    "psycopg2.*",
 ]
 ignore_missing_imports = true
 
